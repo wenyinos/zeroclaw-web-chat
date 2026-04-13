@@ -1,4 +1,4 @@
-/* 全局样式 */
+/* 全局样式 - 模仿 wenyinos.com 风格 */
 :root {
     --primary-color: #0d6efd;
     --secondary-color: #6c757d;
@@ -11,6 +11,9 @@
     --agent-msg-bg: #f1f3f5;
     --agent-msg-color: #212529;
     --border-color: #dee2e6;
+    --text-primary: #212529;
+    --text-muted: #6c757d;
+    --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "Microsoft YaHei", sans-serif;
 }
 
 * {
@@ -20,8 +23,10 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-family: var(--font-family);
     background-color: var(--bg-color);
+    color: var(--text-primary);
+    line-height: 1.6;
     overflow: hidden;
 }
 
@@ -37,7 +42,7 @@ body {
 .chat-header {
     background-color: var(--chat-bg);
     border-bottom: 1px solid var(--border-color);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     z-index: 10;
 }
 
@@ -61,6 +66,7 @@ body {
     height: 80px;
     font-size: 40px;
     margin: 0 auto 1rem;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
 .connection-status {
@@ -158,9 +164,10 @@ body {
 .message-content {
     max-width: 70%;
     padding: 0.75rem 1rem;
-    border-radius: 1rem;
+    border-radius: 0.75rem;
     word-wrap: break-word;
     line-height: 1.6;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .message.user .message-content {
@@ -297,22 +304,35 @@ body {
 .input-area {
     background-color: var(--chat-bg);
     border-top: 1px solid var(--border-color);
+    box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.05);
 }
 
 .copyright {
     border-top: 1px solid var(--border-color);
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     background-color: var(--bg-color);
+    padding: 1rem 0;
 }
 
 .copyright a {
     color: var(--primary-color);
-    transition: opacity 0.2s;
+    transition: all 0.2s ease;
+    text-decoration: none;
 }
 
 .copyright a:hover {
-    opacity: 0.8;
+    color: #0a58ca;
     text-decoration: underline !important;
+}
+
+.copyright .github-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.copyright .github-link:hover {
+    color: #0a58ca;
 }
 
 .input-wrapper {
@@ -326,29 +346,38 @@ body {
     resize: none;
     max-height: 150px;
     padding: 0.75rem 1rem;
-    border: 2px solid var(--border-color);
-    border-radius: 1.5rem;
-    transition: border-color 0.3s;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    transition: all 0.2s ease;
+    font-size: 0.95rem;
 }
 
 .input-wrapper textarea:focus {
     border-color: var(--primary-color);
-    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+    outline: none;
 }
 
 .input-wrapper textarea:disabled {
     background-color: var(--bg-color);
     opacity: 0.6;
+    cursor: not-allowed;
 }
 
 #sendBtn {
-    width: 48px;
-    height: 48px;
-    border-radius: 50%;
+    width: 44px;
+    height: 44px;
+    border-radius: 0.5rem;
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    transition: all 0.2s ease;
+}
+
+#sendBtn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(13, 110, 253, 0.3);
 }
 
 #sendBtn:disabled {
@@ -446,20 +475,21 @@ body {
     }
 }
 
-/* 滚动条样式 */
+/* 滚动条样式 - 模仿 wenyinos.com 简约风格 */
 .messages-container::-webkit-scrollbar {
-    width: 8px;
+    width: 6px;
 }
 
 .messages-container::-webkit-scrollbar-track {
-    background: var(--bg-color);
+    background: transparent;
 }
 
 .messages-container::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 4px;
+    background: #c1c1c1;
+    border-radius: 3px;
+    transition: background 0.2s ease;
 }
 
 .messages-container::-webkit-scrollbar-thumb:hover {
-    background: var(--secondary-color);
+    background: #a1a1a1;
 }

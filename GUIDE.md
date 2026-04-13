@@ -159,6 +159,8 @@ PORT=3332
 - 💡 提出建议
 - 🔧 提交 PR
 
+**仓库地址**: https://github.com/wenyinos/zeroclaw-web-chat
+
 ## 📝 许可证
 
 MIT License

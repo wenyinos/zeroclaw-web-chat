@@ -2,6 +2,8 @@
 
 基于 Bootstrap 5 + Node.js 的 ZeroClaw Web 网页聊天界面。
 
+**GitHub 仓库**: https://github.com/wenyinos/zeroclaw-web-chat
+
 ## 功能特性
 
 - ✅ 实时 WebSocket 聊天连接
@@ -199,3 +201,5 @@ MIT
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+**仓库地址**: https://github.com/wenyinos/zeroclaw-web-chat
