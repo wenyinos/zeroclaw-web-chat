@@ -74,8 +74,20 @@ class ZeroClawChat {
                 savedGatewayUrl = null;
             }
 
+            // 智能处理 Gateway URL
+            let serverGatewayUrl = config.gatewayUrl || 'http://localhost:42617';
+            
+            // 如果服务器返回的 Gateway URL 是 localhost,则使用当前页面的 hostname
+            // 这样可以适配手机端访问
+            if (serverGatewayUrl.includes('localhost') || serverGatewayUrl.includes('127.0.0.1')) {
+                const currentHost = window.location.hostname;
+                const gatewayPort = new URL(serverGatewayUrl).port;
+                serverGatewayUrl = `http://${currentHost}:${gatewayPort}`;
+                console.log('⚙️ [配置] 自动替换 localhost 为当前主机地址:', serverGatewayUrl);
+            }
+
             // 如果用户没有自定义配置，使用服务器配置
-            this.gatewayUrl = savedGatewayUrl || config.gatewayUrl || 'http://localhost:42617';
+            this.gatewayUrl = savedGatewayUrl || serverGatewayUrl;
             this.token = savedToken !== null ? savedToken : config.token || '';
 
             console.log('⚙️ [配置] 已加载服务器配置');
