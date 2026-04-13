@@ -8,6 +8,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
+import WebSocket, { WebSocketServer } from 'ws';
+import { URL } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -147,6 +149,81 @@ app.post('/api/execute', (req, res) => {
 app.use((err, req, res, next) => {
   log('error', `未处理的错误: ${err.message}\n${err.stack}`);
   res.status(500).json({ success: false, message: '服务器内部错误' });
+});
+
+// WebSocket 代理
+const gatewayWsUrl = GATEWAY_URL.replace(/^http/, 'ws');
+log('info', `🔄 WebSocket 代理: 将 /ws/chat 代理到 ${gatewayWsUrl}/ws/chat`);
+
+// 创建 WebSocket 服务器
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
+  
+  // 只代理 /ws/chat 路径
+  if (pathname === '/ws/chat') {
+    log('info', `🔌 [WebSocket 代理] 收到 WebSocket 升级请求`);
+    log('info', `   - 客户端: ${request.socket.remoteAddress}`);
+    log('info', `   - URL: ${request.url}`);
+    
+    // 接受客户端 WebSocket 连接
+    wss.handleUpgrade(request, socket, head, (clientWs) => {
+      log('info', `✅ [WebSocket 代理] 客户端 WebSocket 连接已建立`);
+      
+      // 连接到 Gateway
+      const targetUrl = `${gatewayWsUrl}/ws/chat${request.url.includes('?') ? request.url.substring(request.url.indexOf('?')) : ''}`;
+      log('info', `   - 连接到 Gateway: ${targetUrl}`);
+      
+      const gatewayWs = new WebSocket(targetUrl);
+      
+      // 客户端 -> Gateway
+      clientWs.on('message', (data) => {
+        if (gatewayWs.readyState === WebSocket.OPEN) {
+          gatewayWs.send(data.toString());
+        }
+      });
+      
+      // Gateway -> 客户端
+      gatewayWs.on('message', (data) => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(data.toString());
+        }
+      });
+      
+      gatewayWs.on('open', () => {
+        log('info', `✅ [WebSocket 代理] 已连接到 Gateway`);
+      });
+      
+      gatewayWs.on('close', (code, reason) => {
+        log('info', `🔌 [WebSocket 代理] Gateway 连接已关闭 (code: ${code})`);
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.close(code, reason);
+        }
+      });
+      
+      gatewayWs.on('error', (error) => {
+        log('error', `❌ [WebSocket 代理] Gateway 连接错误: ${error.message}`);
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.close(1011, 'Gateway connection error');
+        }
+      });
+      
+      clientWs.on('close', (code, reason) => {
+        log('info', `🔌 [WebSocket 代理] 客户端连接已关闭 (code: ${code})`);
+        if (gatewayWs.readyState === WebSocket.OPEN) {
+          gatewayWs.close(code, reason);
+        }
+      });
+      
+      clientWs.on('error', (error) => {
+        log('error', `❌ [WebSocket 代理] 客户端连接错误: ${error.message}`);
+        if (gatewayWs.readyState === WebSocket.OPEN) {
+          gatewayWs.close();
+        }
+      });
+    });
+  }
 });
 
 // 启动服务器

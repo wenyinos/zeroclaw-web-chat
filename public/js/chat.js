@@ -294,37 +294,36 @@ class ZeroClawChat {
     
     // 连接 WebSocket
     connect() {
-        const wsUrl = this.gatewayUrl.replace(/^http/, 'ws');
+        // 使用相对路径,通过 Web 服务器代理到 Gateway
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsHost = window.location.host;
+        const url = `${wsProtocol}//${wsHost}/ws/chat`;
+        
         const params = new URLSearchParams();
         params.set('session_id', this.sessionId);
         if (this.token) {
             params.set('token', this.token);
         }
 
-        const url = `${wsUrl}/ws/chat?${params.toString()}`;
-        // 注意：不使用子协议，因为 ZeroClaw v0.1.7 不支持子协议回显
-        // const protocols = ['zeroclaw.v1'];
-        // if (this.token) {
-        //     protocols.push(`bearer.${this.token}`);
-        // }
+        const fullUrl = `${url}?${params.toString()}`;
 
         console.log('═'.repeat(60));
-        console.log('🔌 [WebSocket] 正在连接到 ZeroClaw Gateway');
+        console.log('🔌 [WebSocket] 正在连接到 ZeroClaw Gateway (通过代理)');
         console.log('═'.repeat(60));
-        console.log('📍 Gateway 地址:', this.gatewayUrl);
-        console.log('🔗 WebSocket URL:', url);
-        console.log('📡 协议: (无子协议 - ZeroClaw v0.1.7 兼容)');
+        console.log('📍 Web 服务器:', window.location.origin);
+        console.log('🔗 WebSocket URL:', fullUrl);
+        console.log('📡 模式: WebSocket 代理 (服务器内部转发)');
         console.log('🆔 Session ID:', this.sessionId);
         console.log('🔑 Token:', this.token ? '已配置 (' + this.token.substring(0, 8) + '...)' : '未配置');
         console.log('─'.repeat(60));
 
         // 不传递子协议以兼容 ZeroClaw v0.1.7
-        this.ws = new WebSocket(url);
+        this.ws = new WebSocket(fullUrl);
 
         this.ws.onopen = () => {
             console.log('✅ [WebSocket] 连接已成功建立');
             console.log('📊 连接信息:');
-            console.log('   - URL:', url);
+            console.log('   - URL:', fullUrl);
             console.log('   - 协议:', this.ws.protocol || '(无子协议)');
             console.log('   - 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
             console.log('═'.repeat(60));
@@ -367,12 +366,12 @@ class ZeroClawChat {
         this.ws.onerror = (error) => {
             console.error('═'.repeat(60));
             console.error('❌ [WebSocket] 连接错误');
-            console.error('📍 目标 URL:', url);
+            console.error('📍 目标 URL:', fullUrl);
             console.error('🔍 错误详情:', error);
             console.error('💡 可能原因:');
             console.error('   1. Gateway 未启动或端口错误');
             console.error('   2. 网络连接问题');
-            console.error('   3. CORS 配置问题');
+            console.error('   3. 代理配置问题');
             console.error('═'.repeat(60));
             this.setConnected(false);
         };
