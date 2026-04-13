@@ -6,6 +6,7 @@ class ZeroClawChat {
         this.gatewayUrl = localStorage.getItem('gatewayUrl') || 'http://localhost:8190';
         this.token = localStorage.getItem('token') || '';
         this.sessionId = this.getOrCreateSessionId();
+        this.accessKey = null;
         
         // WebSocket 连接
         this.ws = null;
@@ -21,6 +22,12 @@ class ZeroClawChat {
         this.streamingThinking = '';
         
         // DOM 元素
+        this.authContainer = document.getElementById('authContainer');
+        this.chatContainer = document.getElementById('chatContainer');
+        this.authForm = document.getElementById('authForm');
+        this.accessKeyInput = document.getElementById('accessKeyInput');
+        this.authError = document.getElementById('authError');
+        this.authSubmitBtn = document.getElementById('authSubmitBtn');
         this.messagesWrapper = document.getElementById('messagesWrapper');
         this.messageInput = document.getElementById('messageInput');
         this.sendBtn = document.getElementById('sendBtn');
@@ -33,6 +40,74 @@ class ZeroClawChat {
     }
     
     init() {
+        // 检查是否已有访问密钥
+        const savedKey = sessionStorage.getItem('access_key');
+        if (savedKey) {
+            this.accessKey = savedKey;
+            this.showChat();
+        } else {
+            this.showAuth();
+        }
+    }
+    
+    // 显示验证界面
+    showAuth() {
+        this.authContainer.classList.remove('d-none');
+        this.chatContainer.classList.add('d-none');
+        this.accessKeyInput.focus();
+        
+        // 绑定表单事件
+        this.authForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleAuth();
+        });
+        
+        this.authSubmitBtn.addEventListener('click', () => {
+            this.handleAuth();
+        });
+    }
+    
+    // 处理验证
+    async handleAuth() {
+        const key = this.accessKeyInput.value.trim();
+        if (!key) return;
+        
+        this.authSubmitBtn.disabled = true;
+        this.authSubmitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>验证中...';
+        this.authError.classList.add('d-none');
+        
+        try {
+            // 验证密钥（发送到后端）
+            const response = await fetch('/api/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                this.accessKey = key;
+                sessionStorage.setItem('access_key', key);
+                this.showChat();
+            } else {
+                this.authError.classList.remove('d-none');
+                this.accessKeyInput.value = '';
+                this.accessKeyInput.focus();
+            }
+        } catch (error) {
+            console.error('验证失败:', error);
+            this.authError.classList.remove('d-none');
+        } finally {
+            this.authSubmitBtn.disabled = false;
+            this.authSubmitBtn.innerHTML = '<i class="bi bi-unlock me-1"></i>验证并进入';
+        }
+    }
+    
+    // 显示聊天界面
+    showChat() {
+        this.authContainer.classList.add('d-none');
+        this.chatContainer.classList.remove('d-none');
         this.loadMessages();
         this.setupEventListeners();
         this.connect();
