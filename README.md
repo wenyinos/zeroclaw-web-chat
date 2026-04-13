@@ -64,3 +64,41 @@ zeroclaw-web-chat/
 ## 许可证
 
 MIT
+
+## 工具调用说明
+
+### Shell 命令执行
+
+本项目支持前端接收和显示 ZeroClaw AI 的 shell 工具调用。当 AI 返回 `shell(command="命令")` 格式时：
+
+1. **前端检测**：`chat.js` 自动识别工具调用格式
+2. **后端代理**：通过 `/api/execute` 端点执行命令
+3. **安全限制**：`server.js` 中配置了允许的命令白名单（`uname`、`ls`、`cat`、`df`、`free`、`uptime`、`hostnamectl` 等）
+
+### 复合命令限制
+
+ZeroClaw Gateway 出于安全考虑，**可能拒绝执行包含管道符或逻辑运算符（`&&`、`||`、`;`、`|`）的复合命令**。
+
+例如：
+- ❌ `uname -a && hostnamectl && uptime`（可能被拒绝）
+- ✅ `uname -a`（正常执行）
+
+**解决方案**：AI 会自动退化为分多次调用单个命令，每个命令独立执行。这是 ZeroClaw 的安全机制，无需修改代码。
+
+### 配置允许的命令
+
+编辑 `~/.zeroclaw/config.toml` 中的 `[autonomy]` 部分：
+
+```toml
+[autonomy]
+allowed_commands = [
+    "uname",
+    "hostnamectl",
+    "uptime",
+    "df",
+    "free",
+    # ... 更多命令
+]
+```
+
+修改后需重启 Gateway：`zeroclaw gateway restart`
