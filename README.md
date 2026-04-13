@@ -9,7 +9,11 @@ npm install
 npm start
 ```
 
-访问 **http://localhost:3332**，默认密钥：`zeroclaw2026`
+访问地址：
+- 本地：**http://localhost:3332**
+- 测试：**https://zero.wenyinos.com/**
+
+默认密钥：`zeroclaw2026`
 
 ## 配置
 
