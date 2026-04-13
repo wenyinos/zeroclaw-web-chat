@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZeroClaw Web Chat</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="chat-container">
+        <!-- 头部 -->
+        <header class="chat-header">
+            <div class="container-fluid px-4 py-3">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="bot-avatar small">
+                            <i class="bi bi-robot"></i>
+                        </div>
+                        <div>
+                            <h5 class="mb-0">ZeroClaw Agent</h5>
+                            <div class="connection-status">
+                                <span class="status-dot" id="statusDot"></span>
+                                <span id="statusText">连接中...</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-sm btn-outline-secondary" id="clearChatBtn" title="清空对话">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" id="settingsBtn" title="设置">
+                            <i class="bi bi-gear"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- 消息区域 -->
+        <div class="messages-container" id="messagesContainer">
+            <div class="messages-wrapper" id="messagesWrapper">
+                <!-- 欢迎消息 -->
+                <div class="welcome-message" id="welcomeMessage">
+                    <div class="bot-avatar large">
+                        <i class="bi bi-robot"></i>
+                    </div>
+                    <h4>ZeroClaw AI 助手</h4>
+                    <p class="text-muted">开始对话吧！我可以帮您执行任务、回答问题</p>
+                </div>
+                
+                <!-- 消息列表将在这里动态插入 -->
+            </div>
+        </div>
+
+        <!-- 输入区域 -->
+        <div class="input-area">
+            <div class="container-fluid px-4 py-3">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="messageInput" 
+                        class="form-control" 
+                        rows="1" 
+                        placeholder="输入消息..."
+                        disabled
+                    ></textarea>
+                    <button class="btn btn-primary" id="sendBtn" disabled>
+                        <i class="bi bi-send-fill"></i>
+                    </button>
+                </div>
+                <div class="text-center mt-2">
+                    <small class="text-muted">按 Enter 发送，Shift+Enter 换行</small>
+                </div>
+            </div>
+            <!-- 版权信息 -->
+            <div class="copyright text-center py-2">
+                <small class="text-muted">
+                    © 2026 ZeroClaw - AI Assistant Web Interface | 
+                    Powered by <a href="https://github.com/zeroclaw" target="_blank" class="text-decoration-none">ZeroClaw</a>
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置模态框 -->
+    <div class="modal fade" id="settingsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">设置</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="gatewayUrl" class="form-label">Gateway 地址</label>
+                        <input type="text" class="form-control" id="gatewayUrl" value="http://localhost:8190">
+                    </div>
+                    <div class="mb-3">
+                        <label for="token" class="form-label">认证令牌（可选）</label>
+                        <input type="password" class="form-control" id="token" placeholder="留空表示不需要认证">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveSettingsBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Markdown 渲染库 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="js/chat.js" type="module"></script>
+</body>
+</html>

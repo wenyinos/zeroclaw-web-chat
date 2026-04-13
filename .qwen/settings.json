@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/zemi/MyDev/zeroclaw/**)"
+    ]
+  },
+  "$version": 3
+}
