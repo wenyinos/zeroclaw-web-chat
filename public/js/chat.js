@@ -71,11 +71,11 @@ class ZeroClawChat {
     async handleAuth() {
         const key = this.accessKeyInput.value.trim();
         if (!key) return;
-        
+
         this.authSubmitBtn.disabled = true;
         this.authSubmitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>验证中...';
         this.authError.classList.add('d-none');
-        
+
         try {
             // 验证密钥（发送到后端）
             const response = await fetch('/api/verify', {
@@ -83,34 +83,44 @@ class ZeroClawChat {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ key })
             });
-            
+
             const result = await response.json();
-            
+
             if (result.success) {
+                console.log('验证成功，进入聊天界面');
                 this.accessKey = key;
                 sessionStorage.setItem('access_key', key);
                 this.showChat();
             } else {
+                console.error('密钥错误:', result.message);
                 this.authError.classList.remove('d-none');
+                this.authError.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${result.message || '密钥错误，请重试'}`;
                 this.accessKeyInput.value = '';
                 this.accessKeyInput.focus();
             }
         } catch (error) {
             console.error('验证失败:', error);
             this.authError.classList.remove('d-none');
+            this.authError.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>验证失败，请检查网络连接';
         } finally {
             this.authSubmitBtn.disabled = false;
             this.authSubmitBtn.innerHTML = '<i class="bi bi-unlock me-1"></i>验证并进入';
         }
     }
-    
+
     // 显示聊天界面
     showChat() {
+        console.log('显示聊天界面...');
         this.authContainer.classList.add('d-none');
         this.chatContainer.classList.remove('d-none');
-        this.loadMessages();
-        this.setupEventListeners();
-        this.connect();
+        
+        // 确保 DOM 已更新
+        setTimeout(() => {
+            console.log('加载消息和建立连接...');
+            this.loadMessages();
+            this.setupEventListeners();
+            this.connect();
+        }, 100);
     }
     
     // 获取或创建会话 ID
