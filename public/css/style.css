@@ -350,18 +350,63 @@ body {
     margin-bottom: 0.5rem;
 }
 
-.tool-call-args {
+.tool-call-args-details {
+    margin-bottom: 0.5rem;
+}
+
+.tool-call-args-details summary {
+    cursor: pointer;
     font-size: 0.85rem;
     color: var(--secondary-color);
+    font-weight: 500;
+}
+
+.tool-call-args-details summary:hover {
+    color: var(--primary-color);
+}
+
+.tool-call-args {
+    font-size: 0.8rem;
+    color: var(--secondary-color);
     font-family: 'Courier New', monospace;
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+    margin-top: 0.25rem;
+    max-height: 150px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.tool-call-output-details {
+    margin-top: 0.5rem;
+}
+
+.tool-call-output-details summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--secondary-color);
+    font-weight: 500;
+}
+
+.tool-call-output-details summary:hover {
+    color: var(--primary-color);
 }
 
 .tool-call-output {
     margin-top: 0.5rem;
-    padding-top: 0.5rem;
+    padding: 0.5rem;
     border-top: 1px solid rgba(13, 110, 253, 0.2);
     font-size: 0.85rem;
-    color: var(--secondary-color);
+    color: var(--text-primary);
+    background-color: rgba(0, 0, 0, 0.03);
+    border-radius: 0.25rem;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: 'Courier New', monospace;
 }
 
 /* 思考过程 */

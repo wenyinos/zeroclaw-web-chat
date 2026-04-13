@@ -2,9 +2,9 @@
 
 class ZeroClawChat {
     constructor() {
-        // 配置
-        this.gatewayUrl = localStorage.getItem('gatewayUrl') || 'http://localhost:8190';
-        this.token = localStorage.getItem('token') || '';
+        // 配置（优先从服务器 API 获取，其次 localStorage，最后默认值）
+        this.gatewayUrl = null;  // 将从 /api/config 加载
+        this.token = null;       // 将从 /api/config 加载
         this.sessionId = this.getOrCreateSessionId();
         this.accessKey = null;
         
@@ -40,13 +40,47 @@ class ZeroClawChat {
     }
     
     init() {
-        // 检查是否已有访问密钥
-        const savedKey = sessionStorage.getItem('access_key');
-        if (savedKey) {
-            this.accessKey = savedKey;
-            this.showChat();
-        } else {
-            this.showAuth();
+        // 先加载服务器配置
+        this.loadServerConfig().then(() => {
+            // 检查是否已有访问密钥
+            const savedKey = sessionStorage.getItem('access_key');
+            if (savedKey) {
+                this.accessKey = savedKey;
+                this.showChat();
+            } else {
+                this.showAuth();
+            }
+        });
+    }
+
+    // 从服务器加载配置
+    async loadServerConfig() {
+        try {
+            const response = await fetch('/api/config');
+            const config = await response.json();
+
+            // 优先使用 localStorage 中用户自定义的值
+            let savedGatewayUrl = localStorage.getItem('gatewayUrl');
+            let savedToken = localStorage.getItem('token');
+
+            // 自动修复旧的错误配置
+            if (savedGatewayUrl && savedGatewayUrl.includes(':8190')) {
+                console.log('⚠️ [配置] 检测到旧的错误配置 (:8190)，自动修复');
+                localStorage.removeItem('gatewayUrl');
+                savedGatewayUrl = null;
+            }
+
+            // 如果用户没有自定义配置，使用服务器配置
+            this.gatewayUrl = savedGatewayUrl || config.gatewayUrl || 'http://localhost:42617';
+            this.token = savedToken !== null ? savedToken : config.token || '';
+
+            console.log('⚙️ [配置] 已加载服务器配置');
+            console.log('   - Gateway URL:', this.gatewayUrl);
+            console.log('   - Token:', this.token ? '已配置' : '未配置');
+        } catch (error) {
+            console.warn('⚠️ [配置] 无法加载服务器配置，使用默认值');
+            this.gatewayUrl = localStorage.getItem('gatewayUrl') || 'http://localhost:42617';
+            this.token = localStorage.getItem('token') || '';
         }
     }
     
@@ -207,28 +241,30 @@ class ZeroClawChat {
         }
 
         const url = `${wsUrl}/ws/chat?${params.toString()}`;
-        const protocols = ['zeroclaw.v1'];
-        if (this.token) {
-            protocols.push(`bearer.${this.token}`);
-        }
+        // 注意：不使用子协议，因为 ZeroClaw v0.1.7 不支持子协议回显
+        // const protocols = ['zeroclaw.v1'];
+        // if (this.token) {
+        //     protocols.push(`bearer.${this.token}`);
+        // }
 
         console.log('═'.repeat(60));
         console.log('🔌 [WebSocket] 正在连接到 ZeroClaw Gateway');
         console.log('═'.repeat(60));
         console.log('📍 Gateway 地址:', this.gatewayUrl);
         console.log('🔗 WebSocket URL:', url);
-        console.log('📡 协议:', protocols.join(', '));
+        console.log('📡 协议: (无子协议 - ZeroClaw v0.1.7 兼容)');
         console.log('🆔 Session ID:', this.sessionId);
         console.log('🔑 Token:', this.token ? '已配置 (' + this.token.substring(0, 8) + '...)' : '未配置');
         console.log('─'.repeat(60));
 
-        this.ws = new WebSocket(url, protocols);
+        // 不传递子协议以兼容 ZeroClaw v0.1.7
+        this.ws = new WebSocket(url);
 
         this.ws.onopen = () => {
             console.log('✅ [WebSocket] 连接已成功建立');
             console.log('📊 连接信息:');
             console.log('   - URL:', url);
-            console.log('   - 协议:', this.ws.protocol);
+            console.log('   - 协议:', this.ws.protocol || '(无子协议)');
             console.log('   - 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
             console.log('═'.repeat(60));
             this.setConnected(true);
@@ -381,12 +417,31 @@ class ZeroClawChat {
 
             case 'message':
             case 'done': {
-                const content = msg.full_response || msg.content || this.pendingContent;
+                let content = msg.full_response || msg.content || this.pendingContent;
                 const thinking = this.capturedThinking || this.pendingThinking || undefined;
 
                 console.log('✅ [Gateway] 消息完成');
                 console.log('   - 内容长度:', content?.length || 0, '字符');
                 console.log('   - 思考长度:', thinking?.length || 0, '字符');
+
+                // 检测并解析工具调用格式
+                if (content && typeof content === 'string') {
+                    // 匹配 shell 命令格式
+                    const shellMatch = content.match(/`+[\s\n]*shell\(command="([^"]+)"\)[\s\n]*`+/);
+                    if (shellMatch) {
+                        const shellCmd = shellMatch[1];
+                        console.log('🔧 [Gateway] 检测到 shell 工具调用:', shellCmd);
+                        
+                        // 创建工具调用消息
+                        this.addToolCallMessage('shell', { command: shellCmd });
+                        
+                        // 在前端执行 shell 命令
+                        this.executeShellCommand(shellCmd);
+                        
+                        // 不显示原始命令，等待执行结果
+                        content = null;
+                    }
+                }
 
                 if (content) {
                     this.addAgentMessage(content, thinking);
@@ -406,11 +461,12 @@ class ZeroClawChat {
                 console.log('🏁 [Gateway] Agent 完成');
                 console.log('   - Provider:', msg.provider || '未知');
                 console.log('   - Model:', msg.model || '未知');
+                this.finalizeToolCalls();
                 break;
 
             case 'tool_call': {
-                const toolName = msg.name || 'unknown';
-                const toolArgs = msg.args;
+                const toolName = msg.name || msg.tool || 'unknown';
+                const toolArgs = msg.args || msg.input || {};
                 console.log('🔧 [Gateway] 工具调用:', toolName);
                 console.log('   - 参数:', JSON.stringify(toolArgs, null, 2));
                 this.addToolCallMessage(toolName, toolArgs);
@@ -418,11 +474,11 @@ class ZeroClawChat {
             }
 
             case 'tool_result': {
-                const output = msg.output || '';
+                const output = msg.output || msg.result || '';
                 console.log('✅ [Gateway] 工具结果');
                 console.log('   - 输出长度:', output.length, '字符');
                 console.log('   - 输出预览:', output.substring(0, 100) + (output.length > 100 ? '...' : ''));
-                this.updateToolCallOutput(msg.output || '');
+                this.updateToolCallOutput(output);
                 break;
             }
                 
@@ -532,7 +588,76 @@ class ZeroClawChat {
             lastToolMsg.toolCall.output = output;
             this.updateToolCallElement(lastToolMsg.id, output);
             this.saveMessages();
+            
+            // 工具结果更新后，滚动到底部
+            this.scrollToBottom();
         }
+    }
+    
+    // 在前端执行 shell 命令（通过后端 API 代理）
+    async executeShellCommand(command) {
+        console.log('🔧 [前端] 执行 shell 命令:', command);
+        
+        try {
+            // 调用后端 API 执行命令
+            const response = await fetch('/api/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                console.log('✅ [前端] 命令执行成功');
+                console.log('   输出长度:', result.output?.length || 0, '字符');
+                this.updateToolCallOutput(result.output || '执行成功，无输出');
+                
+                // 创建最终回复消息
+                const replyMsg = {
+                    id: this.generateUUID(),
+                    role: 'agent',
+                    content: `命令执行完成。\\n\\n\`\`\`\\n${result.output}\\n\`\`\``,
+                    markdown: true,
+                    timestamp: new Date()
+                };
+                this.messages.push(replyMsg);
+                this.renderMessage(replyMsg);
+                this.saveMessages();
+            } else {
+                console.error('❌ [前端] 命令执行失败:', result.error);
+                this.updateToolCallOutput('执行失败: ' + (result.error || '未知错误'));
+            }
+        } catch (error) {
+            console.error('❌ [前端] 执行命令异常:', error);
+            this.updateToolCallOutput('执行异常: ' + error.message);
+        }
+        
+        this.scrollToBottom();
+    }
+    
+    // 处理所有工具调用完成后的最终显示
+    finalizeToolCalls() {
+        // 检查是否有未显示的工具调用结果
+        const lastToolMsg = [...this.messages].reverse().find(m => m.toolCall && m.toolCall.output);
+        if (lastToolMsg && lastToolMsg.toolCall.output) {
+            // 如果工具结果很长，可以创建额外的消息显示
+            const output = lastToolMsg.toolCall.output;
+            if (output.length > 500) {
+                // 如果结果很长，创建单独的摘要消息
+                const summaryMsg = {
+                    id: this.generateUUID(),
+                    role: 'agent',
+                    content: `工具 \`${lastToolMsg.toolCall.name}\` 执行完成，输出 ${output.length} 字符。`,
+                    markdown: true,
+                    timestamp: new Date()
+                };
+                this.messages.push(summaryMsg);
+                this.renderMessage(summaryMsg);
+                this.saveMessages();
+            }
+        }
+        this.scrollToBottom();
     }
     
     // 更新流式内容显示
@@ -662,15 +787,26 @@ class ZeroClawChat {
                     <i class="bi bi-wrench-adjustable"></i>
                     <span>${toolCall.name}</span>
                 </div>
-                <div class="tool-call-args">${this.escapeHtml(JSON.stringify(toolCall.args || {}))}</div>
+                <details class="tool-call-args-details">
+                    <summary>参数</summary>
+                    <div class="tool-call-args">${this.escapeHtml(JSON.stringify(toolCall.args || {}, null, 2))}</div>
+                </details>
         `;
-        
-        if (toolCall.output !== undefined) {
-            html += `<div class="tool-call-output">${this.escapeHtml(toolCall.output.substring(0, 200))}${toolCall.output.length > 200 ? '...' : ''}</div>`;
-        } else {
+
+        if (toolCall.output !== undefined && toolCall.output !== '') {
+            const output = toolCall.output;
+            const previewLength = 300;
+            const preview = output.substring(0, previewLength);
+            const isLong = output.length > previewLength;
+            
+            html += `<details class="tool-call-output-details" ${isLong ? '' : 'open'}>
+                <summary>输出结果 (${output.length} 字符)</summary>
+                <div class="tool-call-output">${this.escapeHtml(output)}</div>
+            </details>`;
+        } else if (toolCall.output === undefined) {
             html += `<div class="tool-call-output"><i class="bi bi-hourglass-split"></i> 执行中...</div>`;
         }
-        
+
         html += '</div>';
         return html;
     }

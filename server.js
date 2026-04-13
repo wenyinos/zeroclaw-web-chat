@@ -7,12 +7,13 @@ import dotenv from 'dotenv';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-
-// 加载环境变量
-dotenv.config();
+import { exec } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// 加载环境变量（强制覆盖系统环境变量）
+dotenv.config({ path: path.join(__dirname, '.env'), override: true });
 
 // 日志配置
 const LOG_FILE = path.join(__dirname, 'server.log');
@@ -95,6 +96,53 @@ app.post('/api/verify', (req, res) => {
   res.status(401).json({ success: false, message: '密钥无效' });
 });
 
+// API 路由 - 执行 shell 命令
+app.post('/api/execute', (req, res) => {
+  const { command } = req.body;
+
+  if (!command) {
+    log('warn', '执行请求缺少命令');
+    return res.status(400).json({ success: false, error: '缺少命令' });
+  }
+
+  // 安全检查：只允许安全的命令
+  const allowedCommands = [
+    'uname', 'hostname', 'uptime', 'df', 'free', 'top', 'ps', 'whoami',
+    'date', 'pwd', 'ls', 'cat', 'echo', 'wc', 'head', 'tail', 'grep',
+    'id', 'uname -a', 'hostname', 'uptime', 'df -h', 'df -h /', 'free -h'
+  ];
+
+  // 简单验证：命令是否在允许列表中
+  const normalizedCmd = command.trim().split(/\s+/)[0];
+  const isAllowed = allowedCommands.some(allowed => command.startsWith(allowed));
+
+  if (!isAllowed) {
+    log('warn', `拒绝执行命令: ${command}`);
+    return res.status(403).json({ 
+      success: false, 
+      error: '命令不被允许，只允许系统信息查询命令' 
+    });
+  }
+
+  // 执行命令
+  log('info', `执行命令: ${command}`);
+  
+  exec(command, { timeout: 10000, maxBuffer: 50000 }, (error, stdout, stderr) => {
+    if (error) {
+      log('error', `命令执行失败: ${error.message}`);
+      return res.json({ 
+        success: false, 
+        error: error.message,
+        output: stderr || stdout
+      });
+    }
+    
+    const output = stdout || stderr;
+    log('info', `命令执行成功，输出: ${output.length} 字符`);
+    res.json({ success: true, output: output.trim() });
+  });
+});
+
 // 错误处理中间件
 app.use((err, req, res, next) => {
   log('error', `未处理的错误: ${err.message}\n${err.stack}`);
@@ -102,7 +150,7 @@ app.use((err, req, res, next) => {
 });
 
 // 启动服务器
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   log('info', '🚀 ZeroClaw Web Chat 已启动');
   log('info', `📍 访问地址: http://localhost:${PORT}`);
   log('info', `🔗 Gateway: ${GATEWAY_URL}`);
