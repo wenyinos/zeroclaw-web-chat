@@ -179,10 +179,19 @@ class ZeroClawChat {
         
         // 保存设置
         document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+            const oldGatewayUrl = this.gatewayUrl;
+            const oldToken = this.token;
+            
             this.gatewayUrl = document.getElementById('gatewayUrl').value;
             this.token = document.getElementById('token').value;
             localStorage.setItem('gatewayUrl', this.gatewayUrl);
             localStorage.setItem('token', this.token);
+            
+            console.log('⚙️ [Gateway] 配置已更新');
+            console.log('   - Gateway URL:', oldGatewayUrl, '→', this.gatewayUrl);
+            console.log('   - Token:', oldToken ? '(已配置)' : '(未配置)', '→', this.token ? '(已配置)' : '(未配置)');
+            console.log('   - 正在重新连接...');
+            
             bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
             this.reconnect();
         });
@@ -196,47 +205,98 @@ class ZeroClawChat {
         if (this.token) {
             params.set('token', this.token);
         }
-        
+
         const url = `${wsUrl}/ws/chat?${params.toString()}`;
         const protocols = ['zeroclaw.v1'];
         if (this.token) {
             protocols.push(`bearer.${this.token}`);
         }
-        
-        console.log('连接到:', url);
+
+        console.log('═'.repeat(60));
+        console.log('🔌 [WebSocket] 正在连接到 ZeroClaw Gateway');
+        console.log('═'.repeat(60));
+        console.log('📍 Gateway 地址:', this.gatewayUrl);
+        console.log('🔗 WebSocket URL:', url);
+        console.log('📡 协议:', protocols.join(', '));
+        console.log('🆔 Session ID:', this.sessionId);
+        console.log('🔑 Token:', this.token ? '已配置 (' + this.token.substring(0, 8) + '...)' : '未配置');
+        console.log('─'.repeat(60));
+
         this.ws = new WebSocket(url, protocols);
-        
+
         this.ws.onopen = () => {
-            console.log('WebSocket 连接已建立');
+            console.log('✅ [WebSocket] 连接已成功建立');
+            console.log('📊 连接信息:');
+            console.log('   - URL:', url);
+            console.log('   - 协议:', this.ws.protocol);
+            console.log('   - 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
+            console.log('═'.repeat(60));
             this.setConnected(true);
         };
-        
+
         this.ws.onmessage = (event) => {
             try {
                 const msg = JSON.parse(event.data);
+                // 记录关键事件
+                if (['session_start', 'connected', 'error'].includes(msg.type)) {
+                    console.log(`📨 [WebSocket] 收到事件: ${msg.type}`, msg);
+                }
                 this.handleMessage(msg);
             } catch (error) {
-                console.error('解析消息失败:', error);
+                console.error('❌ [WebSocket] 解析消息失败:', error);
             }
         };
-        
+
         this.ws.onclose = (event) => {
-            console.log('WebSocket 连接已关闭:', event.code, event.reason);
+            console.log('─'.repeat(60));
+            console.log('❌ [WebSocket] 连接已关闭');
+            console.log('📊 关闭信息:');
+            console.log('   - Code:', event.code, this.getCloseCodeDescription(event.code));
+            console.log('   - Reason:', event.reason || '无');
+            console.log('   -  Was Clean:', event.wasClean);
+            console.log('─'.repeat(60));
             this.setConnected(false);
-            
+
             // 自动重连
             if (event.code !== 1000 && event.code !== 1001) {
+                console.log('🔄 [WebSocket] 将在 3 秒后尝试重连...');
                 setTimeout(() => {
-                    console.log('尝试重连...');
+                    console.log('🔄 [WebSocket] 正在重连...');
                     this.connect();
                 }, 3000);
             }
         };
-        
+
         this.ws.onerror = (error) => {
-            console.error('WebSocket 错误:', error);
+            console.error('═'.repeat(60));
+            console.error('❌ [WebSocket] 连接错误');
+            console.error('📍 目标 URL:', url);
+            console.error('🔍 错误详情:', error);
+            console.error('💡 可能原因:');
+            console.error('   1. Gateway 未启动或端口错误');
+            console.error('   2. 网络连接问题');
+            console.error('   3. CORS 配置问题');
+            console.error('═'.repeat(60));
             this.setConnected(false);
         };
+    }
+
+    // 获取 WebSocket 关闭代码说明
+    getCloseCodeDescription(code) {
+        const descriptions = {
+            1000: '正常关闭',
+            1001: '端点离开',
+            1002: '协议错误',
+            1003: '不支持的数据类型',
+            1005: '未提供状态码',
+            1006: '异常断开',
+            1008: '政策违规',
+            1009: '消息过大',
+            1011: '服务器内部错误',
+            1012: '服务重启',
+            1013: '服务暂时不可用'
+        };
+        return descriptions[code] || '未知代码';
     }
     
     // 断开连接
@@ -278,23 +338,39 @@ class ZeroClawChat {
     handleMessage(msg) {
         switch (msg.type) {
             case 'session_start':
-            case 'connected':
-                console.log('会话已启动');
+                console.log('📨 [Gateway] 会话启动');
+                console.log('   - Session ID:', msg.session_id);
+                console.log('   - 会话名称:', msg.name || '未命名');
+                console.log('   - 是否恢复:', msg.resumed ? '是' : '否');
+                console.log('   - 历史消息数:', msg.message_count || 0);
+                console.log('   - Gateway URL:', this.gatewayUrl);
                 break;
-                
+
+            case 'connected':
+                console.log('📨 [Gateway] 连接确认');
+                console.log('   - 消息:', msg.message || 'Connection established');
+                break;
+
+            case 'agent_start':
+                console.log('🤖 [Gateway] Agent 启动');
+                console.log('   - Provider:', msg.provider || '未知');
+                console.log('   - Model:', msg.model || '未知');
+                break;
+
             case 'thinking':
                 this.isTyping = true;
                 this.pendingThinking += msg.content || '';
                 this.updateStreaming();
                 break;
-                
+
             case 'chunk':
                 this.isTyping = true;
                 this.pendingContent += msg.content || '';
                 this.updateStreaming();
                 break;
-                
+
             case 'chunk_reset':
+                console.log('🔄 [Gateway] 重置流式缓冲区');
                 this.capturedThinking = this.pendingThinking;
                 this.pendingContent = '';
                 this.pendingThinking = '';
@@ -302,16 +378,20 @@ class ZeroClawChat {
                 this.streamingThinking = '';
                 this.removeStreamingMessage();
                 break;
-                
+
             case 'message':
             case 'done': {
                 const content = msg.full_response || msg.content || this.pendingContent;
                 const thinking = this.capturedThinking || this.pendingThinking || undefined;
-                
+
+                console.log('✅ [Gateway] 消息完成');
+                console.log('   - 内容长度:', content?.length || 0, '字符');
+                console.log('   - 思考长度:', thinking?.length || 0, '字符');
+
                 if (content) {
                     this.addAgentMessage(content, thinking);
                 }
-                
+
                 this.pendingContent = '';
                 this.pendingThinking = '';
                 this.capturedThinking = '';
@@ -321,22 +401,37 @@ class ZeroClawChat {
                 this.removeStreamingMessage();
                 break;
             }
-                
+
+            case 'agent_end':
+                console.log('🏁 [Gateway] Agent 完成');
+                console.log('   - Provider:', msg.provider || '未知');
+                console.log('   - Model:', msg.model || '未知');
+                break;
+
             case 'tool_call': {
                 const toolName = msg.name || 'unknown';
                 const toolArgs = msg.args;
+                console.log('🔧 [Gateway] 工具调用:', toolName);
+                console.log('   - 参数:', JSON.stringify(toolArgs, null, 2));
                 this.addToolCallMessage(toolName, toolArgs);
                 break;
             }
-                
+
             case 'tool_result': {
+                const output = msg.output || '';
+                console.log('✅ [Gateway] 工具结果');
+                console.log('   - 输出长度:', output.length, '字符');
+                console.log('   - 输出预览:', output.substring(0, 100) + (output.length > 100 ? '...' : ''));
                 this.updateToolCallOutput(msg.output || '');
                 break;
             }
                 
             case 'error':
-                console.error('服务器错误:', msg.message);
-                this.addAgentMessage(`❌ 错误: ${msg.message || '未知错误'}`);
+                console.error('❌ [Gateway] 服务器错误');
+                console.error('   - 错误代码:', msg.code || '未知');
+                console.error('   - 错误消息:', msg.message || '未知错误');
+                console.error('   - Gateway URL:', this.gatewayUrl);
+                this.addAgentMessage(`❌ Gateway 错误 [${msg.code || 'UNKNOWN'}]: ${msg.message || '未知错误'}`);
                 this.isTyping = false;
                 this.pendingContent = '';
                 this.pendingThinking = '';
@@ -349,22 +444,28 @@ class ZeroClawChat {
     sendMessage() {
         const content = this.messageInput.value.trim();
         if (!content || !this.isConnected || this.isTyping) return;
-        
+
         // 添加用户消息
         this.addUserMessage(content);
-        
+
         // 发送到服务器
         try {
-            this.ws.send(JSON.stringify({ type: 'message', content }));
+            const msgData = JSON.stringify({ type: 'message', content });
+            console.log('📤 [Gateway] 发送消息');
+            console.log('   - 内容长度:', content.length, '字符');
+            console.log('   - 内容预览:', content.substring(0, 50) + (content.length > 50 ? '...' : ''));
+            console.log('   - WebSocket 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'CLOSED');
+            
+            this.ws.send(msgData);
             this.isTyping = true;
             this.pendingContent = '';
             this.pendingThinking = '';
             this.showTypingIndicator();
         } catch (error) {
-            console.error('发送消息失败:', error);
+            console.error('❌ [Gateway] 发送消息失败:', error);
             this.addAgentMessage('❌ 发送消息失败，请检查连接');
         }
-        
+
         // 清空输入框
         this.messageInput.value = '';
         this.messageInput.style.height = 'auto';
