@@ -54,4 +54,4 @@ ZEROCLOW_TOKEN=your-token  # 可选
 
 ## 许可证
 
-MIT
+Apache License Version 2.0
