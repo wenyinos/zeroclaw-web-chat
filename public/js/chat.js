@@ -7,12 +7,12 @@ class ZeroClawChat {
         this.token = null;       // 将从 /api/config 加载
         this.sessionId = this.getOrCreateSessionId();
         this.accessKey = null;
-        
+
         // WebSocket 连接
         this.ws = null;
         this.isConnected = false;
         this.isTyping = false;
-        
+
         // 消息状态
         this.messages = [];
         this.pendingContent = '';
@@ -20,7 +20,7 @@ class ZeroClawChat {
         this.capturedThinking = '';
         this.streamingContent = '';
         this.streamingThinking = '';
-        
+
         // DOM 元素
         this.authContainer = document.getElementById('authContainer');
         this.chatContainer = document.getElementById('chatContainer');
@@ -34,11 +34,12 @@ class ZeroClawChat {
         this.statusDot = document.getElementById('statusDot');
         this.statusText = document.getElementById('statusText');
         this.welcomeMessage = document.getElementById('welcomeMessage');
-        
+        this.themeToggleBtn = document.getElementById('themeToggleBtn');
+
         // 初始化
         this.init();
     }
-    
+
     init() {
         // 先加载服务器配置
         this.loadServerConfig().then(() => {
@@ -51,6 +52,9 @@ class ZeroClawChat {
                 this.showAuth();
             }
         });
+
+        // 初始化主题
+        this.initTheme();
     }
 
     // 从服务器加载配置
@@ -84,6 +88,46 @@ class ZeroClawChat {
         }
     }
     
+    // 初始化主题
+    initTheme() {
+        // 从 localStorage 加载主题，如果没有则使用日间主题
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        this.setTheme(savedTheme);
+    }
+
+    // 设置主题
+    setTheme(theme) {
+        if (theme === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            // 更新按钮图标为太阳
+            if (this.themeToggleBtn) {
+                const icon = this.themeToggleBtn.querySelector('i');
+                if (icon) {
+                    icon.className = 'bi bi-sun-fill';
+                }
+            }
+        } else {
+            document.documentElement.removeAttribute('data-theme');
+            // 更新按钮图标为月亮
+            if (this.themeToggleBtn) {
+                const icon = this.themeToggleBtn.querySelector('i');
+                if (icon) {
+                    icon.className = 'bi bi-moon-fill';
+                }
+            }
+        }
+        // 保存到 localStorage
+        localStorage.setItem('theme', theme);
+    }
+
+    // 切换主题
+    toggleTheme() {
+        const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        console.log(`🎨 [主题] 切换主题: ${currentTheme} → ${newTheme}`);
+        this.setTheme(newTheme);
+    }
+
     // 显示验证界面
     showAuth() {
         this.authContainer.classList.remove('d-none');
@@ -201,7 +245,12 @@ class ZeroClawChat {
                 this.clearMessages();
             }
         });
-        
+
+        // 主题切换
+        this.themeToggleBtn.addEventListener('click', () => {
+            this.toggleTheme();
+        });
+
         // 设置按钮
         const settingsBtn = document.getElementById('settingsBtn');
         settingsBtn.addEventListener('click', () => {

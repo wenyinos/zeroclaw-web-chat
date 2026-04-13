@@ -14,6 +14,51 @@
     --text-primary: #212529;
     --text-muted: #6c757d;
     --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    --header-bg: #ffffff;
+    --input-bg: #ffffff;
+    --welcome-text-color: #212529;
+    --scrollbar-thumb: #c1c1c1;
+    --scrollbar-thumb-hover: #a1a1a1;
+    --code-bg: rgba(0, 0, 0, 0.05);
+    --thinking-bg: rgba(255, 193, 7, 0.1);
+    --thinking-border: rgba(255, 193, 7, 0.2);
+    --tool-call-bg: rgba(13, 110, 253, 0.1);
+    --tool-call-border: rgba(13, 110, 253, 0.2);
+    --auth-bg-gradient-start: #667eea;
+    --auth-bg-gradient-end: #764ba2;
+    --modal-bg: #ffffff;
+    --modal-header-border: #dee2e6;
+}
+
+/* 夜间主题 */
+[data-theme="dark"] {
+    --primary-color: #0d6efd;
+    --secondary-color: #adb5bd;
+    --success-color: #198754;
+    --danger-color: #dc3545;
+    --bg-color: #1a1d21;
+    --chat-bg: #212529;
+    --user-msg-bg: #0d6efd;
+    --user-msg-color: #ffffff;
+    --agent-msg-bg: #2c3035;
+    --agent-msg-color: #e9ecef;
+    --border-color: #495057;
+    --text-primary: #e9ecef;
+    --text-muted: #adb5bd;
+    --header-bg: #212529;
+    --input-bg: #2c3035;
+    --welcome-text-color: #e9ecef;
+    --scrollbar-thumb: #495057;
+    --scrollbar-thumb-hover: #6c757d;
+    --code-bg: rgba(0, 0, 0, 0.3);
+    --thinking-bg: rgba(255, 193, 7, 0.15);
+    --thinking-border: rgba(255, 193, 7, 0.3);
+    --tool-call-bg: rgba(13, 110, 253, 0.15);
+    --tool-call-border: rgba(13, 110, 253, 0.3);
+    --auth-bg-gradient-start: #4a5568;
+    --auth-bg-gradient-end: #2d3748;
+    --modal-bg: #2c3035;
+    --modal-header-border: #495057;
 }
 
 * {
@@ -36,12 +81,12 @@ body {
     align-items: center;
     justify-content: center;
     min-height: 100vh;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, var(--auth-bg-gradient-start) 0%, var(--auth-bg-gradient-end) 100%);
     padding: 1rem;
 }
 
 .auth-card {
-    background: white;
+    background: var(--chat-bg);
     border-radius: 1rem;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     max-width: 400px;
@@ -69,7 +114,7 @@ body {
 .lock-icon {
     width: 64px;
     height: 64px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, var(--auth-bg-gradient-start) 0%, var(--auth-bg-gradient-end) 100%);
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -217,7 +262,7 @@ body {
 
 .welcome-message h4 {
     margin-bottom: 0.5rem;
-    color: #212529;
+    color: var(--welcome-text-color);
 }
 
 /* 消息样式 */
@@ -291,7 +336,7 @@ body {
 
 /* Markdown 样式 */
 .message-content pre {
-    background-color: rgba(0, 0, 0, 0.05);
+    background-color: var(--code-bg);
     padding: 0.75rem;
     border-radius: 0.5rem;
     overflow-x: auto;
@@ -334,8 +379,8 @@ body {
 
 /* 工具调用卡片 */
 .tool-call-card {
-    background-color: rgba(13, 110, 253, 0.1);
-    border: 1px solid rgba(13, 110, 253, 0.2);
+    background-color: var(--tool-call-bg);
+    border: 1px solid var(--tool-call-border);
     border-radius: 0.5rem;
     padding: 0.75rem;
     margin: 0.5rem 0;
@@ -369,7 +414,7 @@ body {
     font-size: 0.8rem;
     color: var(--secondary-color);
     font-family: 'Courier New', monospace;
-    background-color: rgba(0, 0, 0, 0.05);
+    background-color: var(--code-bg);
     padding: 0.5rem;
     border-radius: 0.25rem;
     margin-top: 0.25rem;
@@ -397,10 +442,10 @@ body {
 .tool-call-output {
     margin-top: 0.5rem;
     padding: 0.5rem;
-    border-top: 1px solid rgba(13, 110, 253, 0.2);
+    border-top: 1px solid var(--tool-call-border);
     font-size: 0.85rem;
     color: var(--text-primary);
-    background-color: rgba(0, 0, 0, 0.03);
+    background-color: var(--code-bg);
     border-radius: 0.25rem;
     max-height: 300px;
     overflow-y: auto;
@@ -411,8 +456,8 @@ body {
 
 /* 思考过程 */
 .thinking-section {
-    background-color: rgba(255, 193, 7, 0.1);
-    border: 1px solid rgba(255, 193, 7, 0.2);
+    background-color: var(--thinking-bg);
+    border: 1px solid var(--thinking-border);
     border-radius: 0.5rem;
     padding: 0.75rem;
     margin-bottom: 0.5rem;
@@ -430,7 +475,7 @@ body {
 .thinking-content {
     margin-top: 0.5rem;
     padding: 0.5rem;
-    background-color: rgba(0, 0, 0, 0.05);
+    background-color: var(--code-bg);
     border-radius: 0.25rem;
     font-size: 0.85rem;
     white-space: pre-wrap;
@@ -622,11 +667,49 @@ body {
 }
 
 .messages-container::-webkit-scrollbar-thumb {
-    background: #c1c1c1;
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
     transition: background 0.2s ease;
 }
 
 .messages-container::-webkit-scrollbar-thumb:hover {
-    background: #a1a1a1;
+    background: var(--scrollbar-thumb-hover);
+}
+
+/* 主题切换按钮样式 */
+.theme-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.theme-toggle-btn:hover {
+    background-color: var(--code-bg);
+    color: var(--primary-color);
+}
+
+/* 模态框夜间主题适配 */
+[data-theme="dark"] .modal-content {
+    background-color: var(--modal-bg);
+    border-color: var(--border-color);
+}
+
+[data-theme="dark"] .modal-header {
+    border-bottom-color: var(--modal-header-border);
+}
+
+[data-theme="dark"] .modal-footer {
+    border-top-color: var(--modal-header-border);
+}
+
+[data-theme="dark"] .btn-close {
+    filter: invert(1) grayscale(100%) brightness(200%);
 }
