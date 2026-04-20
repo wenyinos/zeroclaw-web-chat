@@ -17,7 +17,7 @@ No lint, typecheck, or test scripts are configured.
 
 ## Environment
 - `.env` is loaded with `dotenv.config({ override: true })` — file vars override system env
-- Defaults: `PORT=3332`, `ZEROCLOW_GATEWAY_URL=http://localhost:42617`, `ACCESS_KEY=zeroclaw2026`
+- Defaults: `PORT=3332`, `ZEROCLOW_GATEWAY_URL=http://localhost:8190` (fallback in server.js; `.env.example` shows 42617), `ACCESS_KEY=zeroclaw2026`
 - `server.log` is appended to alongside stdout (logStream opened at startup)
 
 ## Architecture
@@ -27,5 +27,7 @@ No lint, typecheck, or test scripts are configured.
 
 ## Key Quirks
 - ESM throughout — use `import`/`export`, not CommonJS `require()`
+- Server binds to `0.0.0.0` (accessible externally, not just localhost)
 - WebSocket proxy only handles the `/ws/chat` path; other upgrade requests are ignored
 - `wss` is created with `noServer: true` and manually handled via `server.on('upgrade', ...)`
+- Shell commands restricted to hardcoded allowlist: `uname`, `hostname`, `uptime`, `df`, `free`, `top`, `ps`, `whoami`, `date`, `pwd`, `ls`, `cat`, `echo`, `wc`, `head`, `tail`, `grep`, `id`
