@@ -43,8 +43,8 @@ class ZeroClawChat {
     init() {
         // 先加载服务器配置
         this.loadServerConfig().then(() => {
-            // 检查是否已有访问密钥
-            const savedKey = sessionStorage.getItem('access_key');
+            // 检查是否已有访问密钥（优先 localStorage，其次 sessionStorage）
+            const savedKey = localStorage.getItem('access_key') || sessionStorage.getItem('access_key');
             if (savedKey) {
                 this.accessKey = savedKey;
                 this.showChat();
@@ -179,7 +179,17 @@ class ZeroClawChat {
             if (result.success) {
                 console.log('验证成功，进入聊天界面');
                 this.accessKey = key;
-                sessionStorage.setItem('access_key', key);
+
+                // 根据用户选择保存密钥
+                const rememberMe = document.getElementById('rememberKey') && document.getElementById('rememberKey').checked;
+                if (rememberMe) {
+                    localStorage.setItem('access_key', key);
+                    console.log('已记住密钥（localStorage）');
+                } else {
+                    sessionStorage.setItem('access_key', key);
+                    console.log('仅当前会话有效（sessionStorage）');
+                }
+
                 this.showChat();
             } else {
                 console.error('密钥错误:', result.message);
@@ -221,6 +231,20 @@ class ZeroClawChat {
             sessionStorage.setItem('zeroclaw_session_id', sessionId);
         }
         return sessionId;
+    }
+
+    // 退出登录
+    logout() {
+        // 清除保存的密钥
+        localStorage.removeItem('access_key');
+        sessionStorage.removeItem('access_key');
+        // 断开连接
+        this.disconnect();
+        // 重置状态
+        this.accessKey = null;
+        this.messages = [];
+        // 重新加载页面
+        window.location.reload();
     }
     
     // 生成 UUID
@@ -270,6 +294,13 @@ class ZeroClawChat {
             document.getElementById('gatewayUrl').value = this.gatewayUrl;
             document.getElementById('token').value = this.token;
             modal.show();
+        });
+
+        // 退出登录
+        document.getElementById('logoutBtn').addEventListener('click', () => {
+            if (confirm('确定要退出登录吗？')) {
+                this.logout();
+            }
         });
         
         // 保存设置
