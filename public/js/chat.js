@@ -6,6 +6,7 @@ class ZeroClawChat {
         this.gatewayUrl = null;  // 将从 /api/config 加载
         this.token = null;       // 将从 /api/config 加载
         this.sessionId = this.getOrCreateSessionId();
+        this.verifiedSessionId = sessionStorage.getItem('zeroclaw_verified_session') || null;
         this.accessKey = null;
 
         // WebSocket 连接
@@ -20,6 +21,8 @@ class ZeroClawChat {
         this.capturedThinking = '';
         this.streamingContent = '';
         this.streamingThinking = '';
+        this.authEventsBound = false;
+        this.chatEventsBound = false;
 
         // DOM 元素
         this.authContainer = document.getElementById('authContainer');
@@ -46,8 +49,7 @@ class ZeroClawChat {
             // 检查是否已有访问密钥（优先 localStorage，其次 sessionStorage）
             const savedKey = localStorage.getItem('access_key') || sessionStorage.getItem('access_key');
             if (savedKey) {
-                this.accessKey = savedKey;
-                this.showChat();
+                this.verifyAccessKey(savedKey, Boolean(localStorage.getItem('access_key')));
             } else {
                 this.showAuth();
             }
@@ -146,15 +148,18 @@ class ZeroClawChat {
         this.chatContainer.classList.add('d-none');
         this.accessKeyInput.focus();
         
-        // 绑定表单事件
-        this.authForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleAuth();
-        });
-        
-        this.authSubmitBtn.addEventListener('click', () => {
-            this.handleAuth();
-        });
+        if (!this.authEventsBound) {
+            // 绑定表单事件
+            this.authForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.handleAuth();
+            });
+            
+            this.authSubmitBtn.addEventListener('click', () => {
+                this.handleAuth();
+            });
+            this.authEventsBound = true;
+        }
     }
     
     // 处理验证
@@ -167,49 +172,157 @@ class ZeroClawChat {
         this.authError.classList.add('d-none');
 
         try {
-            // 验证密钥（发送到后端）
-            const response = await fetch('/api/verify', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key })
-            });
-
-            const result = await response.json();
-
-            if (result.success) {
-                console.log('验证成功，进入聊天界面');
-                this.accessKey = key;
-
-                // 根据用户选择保存密钥
-                const rememberMe = document.getElementById('rememberKey') && document.getElementById('rememberKey').checked;
-                if (rememberMe) {
-                    localStorage.setItem('access_key', key);
-                    console.log('已记住密钥（localStorage）');
-                } else {
-                    sessionStorage.setItem('access_key', key);
-                    console.log('仅当前会话有效（sessionStorage）');
-                }
-
-                this.showChat();
-            } else {
-                console.error('密钥错误:', result.message);
-                this.authError.classList.remove('d-none');
-                this.authError.innerHTML = `<i class="bi bi-exclamation-triangle me-1"></i>${result.message || '密钥错误，请重试'}`;
+            const rememberMe = document.getElementById('rememberKey') && document.getElementById('rememberKey').checked;
+            const verifyResult = await this.verifyAccessKey(key, rememberMe);
+            if (!verifyResult.success) {
+                const errorDetails = this.formatVerifyErrorDetails(verifyResult);
+                const mainText = this.escapeHtml(errorDetails.main);
+                const metaText = errorDetails.meta ? this.escapeHtml(errorDetails.meta) : '';
+                const contentHtml = metaText
+                    ? `<div><i class="bi bi-exclamation-triangle me-1"></i>${mainText}</div><small class="d-block mt-1 opacity-75">${metaText}</small>`
+                    : `<i class="bi bi-exclamation-triangle me-1"></i>${mainText}`;
+                this.showAuthError(contentHtml, errorDetails.level);
                 this.accessKeyInput.value = '';
                 this.accessKeyInput.focus();
             }
         } catch (error) {
             console.error('验证失败:', error);
-            this.authError.classList.remove('d-none');
-            this.authError.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>验证失败，请检查网络连接';
+            this.showAuthError('<i class="bi bi-exclamation-triangle me-1"></i>验证失败，请检查网络连接', 'warning');
         } finally {
             this.authSubmitBtn.disabled = false;
             this.authSubmitBtn.innerHTML = '<i class="bi bi-unlock me-1"></i>验证并进入';
         }
     }
 
+    // 向后端验证密钥并保存服务端会话
+    async verifyAccessKey(key, rememberMe = false) {
+        try {
+            const response = await fetch('/api/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key })
+            });
+            const result = await response.json();
+            if (!result.success || !result.sessionId) {
+                this.verifiedSessionId = null;
+                sessionStorage.removeItem('zeroclaw_verified_session');
+                if (response.status === 401) {
+                    localStorage.removeItem('access_key');
+                    sessionStorage.removeItem('access_key');
+                }
+                return {
+                    success: false,
+                    status: response.status,
+                    message: result.message || '密钥验证失败',
+                    retryAfterSeconds: result.retryAfterSeconds,
+                    remainingAttempts: result.remainingAttempts,
+                    windowResetAt: result.windowResetAt,
+                    blockedUntil: result.blockedUntil
+                };
+            }
+
+            this.accessKey = key;
+            this.verifiedSessionId = result.sessionId;
+            sessionStorage.setItem('zeroclaw_verified_session', result.sessionId);
+
+            if (rememberMe) {
+                localStorage.setItem('access_key', key);
+                sessionStorage.removeItem('access_key');
+            } else {
+                sessionStorage.setItem('access_key', key);
+                localStorage.removeItem('access_key');
+            }
+
+            console.log('验证成功，进入聊天界面');
+            this.showChat();
+            return { success: true };
+        } catch (error) {
+            console.warn('密钥验证失败，将返回登录界面:', error.message);
+            this.verifiedSessionId = null;
+            sessionStorage.removeItem('zeroclaw_verified_session');
+            localStorage.removeItem('access_key');
+            sessionStorage.removeItem('access_key');
+            this.showAuth();
+            return {
+                success: false,
+                status: 0,
+                message: '验证失败，请检查网络连接'
+            };
+        }
+    }
+
+    formatVerifyErrorDetails(verifyResult) {
+        if (verifyResult.status === 429) {
+            const seconds = verifyResult.retryAfterSeconds ?? 0;
+            const blockedUntilText = this.formatDateTime(verifyResult.blockedUntil);
+            return {
+                main: `尝试次数过多，请 ${seconds} 秒后再试`,
+                meta: blockedUntilText ? `解锁时间：${blockedUntilText}` : '',
+                level: 'warning'
+            };
+        }
+
+        if (verifyResult.status === 401) {
+            const remainingAttempts = verifyResult.remainingAttempts;
+            const resetAtText = this.formatDateTime(verifyResult.windowResetAt);
+            if (typeof remainingAttempts === 'number') {
+                if (remainingAttempts <= 0) {
+                    this.reportVerifyAnomaly('remaining_attempts_non_positive_on_401', verifyResult);
+                    return {
+                        main: '登录状态异常，请稍后重试',
+                        meta: resetAtText ? `计数重置：${resetAtText}` : '建议稍后再试或刷新页面',
+                        level: 'warning'
+                    };
+                }
+                const nearBlockHint = remainingAttempts === 1 ? '再错误 1 次将触发封禁' : '';
+                const metaParts = [];
+                if (nearBlockHint) metaParts.push(nearBlockHint);
+                if (resetAtText) metaParts.push(`计数重置：${resetAtText}`);
+                return {
+                    main: `密钥错误，还可重试 ${remainingAttempts} 次`,
+                    meta: metaParts.join('；'),
+                    level: 'danger'
+                };
+            }
+            return { main: verifyResult.message || '密钥错误，请重试', meta: '', level: 'danger' };
+        }
+
+        this.reportVerifyAnomaly('unexpected_verify_status', verifyResult);
+        return { main: verifyResult.message || '验证失败，请稍后重试', meta: '', level: 'warning' };
+    }
+
+    formatDateTime(isoText) {
+        if (!isoText) return '';
+        const date = new Date(isoText);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleString();
+    }
+
+    showAuthError(contentHtml, level = 'danger') {
+        this.authError.classList.remove('d-none', 'alert-danger', 'alert-warning', 'alert-info');
+        const levelClass = level === 'warning' ? 'alert-warning' : level === 'info' ? 'alert-info' : 'alert-danger';
+        this.authError.classList.add(levelClass);
+        this.authError.innerHTML = contentHtml;
+    }
+
+    reportVerifyAnomaly(reason, verifyResult) {
+        console.warn('[AUTH_VERIFY_ANOMALY]', {
+            reason,
+            status: verifyResult?.status,
+            message: verifyResult?.message,
+            remainingAttempts: verifyResult?.remainingAttempts,
+            retryAfterSeconds: verifyResult?.retryAfterSeconds,
+            blockedUntil: verifyResult?.blockedUntil,
+            windowResetAt: verifyResult?.windowResetAt
+        });
+    }
+
     // 显示聊天界面
     showChat() {
+        if (!this.verifiedSessionId) {
+            this.showAuth();
+            return;
+        }
         console.log('显示聊天界面...');
         this.authContainer.classList.add('d-none');
         this.chatContainer.classList.remove('d-none');
@@ -238,10 +351,12 @@ class ZeroClawChat {
         // 清除保存的密钥
         localStorage.removeItem('access_key');
         sessionStorage.removeItem('access_key');
+        sessionStorage.removeItem('zeroclaw_verified_session');
         // 断开连接
         this.disconnect();
         // 重置状态
         this.accessKey = null;
+        this.verifiedSessionId = null;
         this.messages = [];
         // 重新加载页面
         window.location.reload();
@@ -258,6 +373,10 @@ class ZeroClawChat {
     
     // 设置事件监听
     setupEventListeners() {
+        if (this.chatEventsBound) {
+            return;
+        }
+
         // 发送按钮
         this.sendBtn.addEventListener('click', () => this.sendMessage());
         
@@ -321,6 +440,8 @@ class ZeroClawChat {
             bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
             this.reconnect();
         });
+
+        this.chatEventsBound = true;
     }
     
     // 连接 WebSocket
@@ -332,6 +453,7 @@ class ZeroClawChat {
         
         const params = new URLSearchParams();
         params.set('session_id', this.sessionId);
+        params.set('auth_session', this.verifiedSessionId);
         if (this.token) {
             params.set('token', this.token);
         }
@@ -383,6 +505,11 @@ class ZeroClawChat {
             console.log('   -  Was Clean:', event.wasClean);
             console.log('─'.repeat(60));
             this.setConnected(false);
+
+            if (event.code === 4401) {
+                this.addAgentMessage('🔒 会话已过期，请重新登录。');
+                return;
+            }
 
             // 自动重连
             if (event.code !== 1000 && event.code !== 1001) {
@@ -693,7 +820,10 @@ class ZeroClawChat {
             // 调用后端 API 执行命令
             const response = await fetch('/api/execute', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': this.verifiedSessionId || ''
+                },
                 body: JSON.stringify({ command })
             });
             
@@ -792,7 +922,7 @@ class ZeroClawChat {
         }
         
         if (this.streamingContent) {
-            contentText.innerHTML = marked.parse(this.streamingContent);
+            contentText.innerHTML = this.renderMarkdownSafe(this.streamingContent);
         } else {
             contentText.innerHTML = '<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
         }
@@ -839,7 +969,7 @@ class ZeroClawChat {
                         <i class="bi bi-chevron-down ms-auto"></i>
                     </div>
                     <div id="thinking-${message.id}" class="collapse">
-                        <div class="thinking-content">${message.thinking}</div>
+                        <div class="thinking-content">${this.escapeHtml(message.thinking)}</div>
                     </div>
                 </div>
             `;
@@ -850,7 +980,7 @@ class ZeroClawChat {
             contentHtml += this.renderToolCall(message.toolCall);
         } else if (message.markdown) {
             // Markdown 渲染
-            contentHtml += `<div class="content-text">${marked.parse(message.content)}</div>`;
+            contentHtml += `<div class="content-text">${this.renderMarkdownSafe(message.content)}</div>`;
         } else {
             // 纯文本
             contentHtml += `<div class="content-text">${this.escapeHtml(message.content)}</div>`;
@@ -876,7 +1006,7 @@ class ZeroClawChat {
             <div class="tool-call-card">
                 <div class="tool-call-header">
                     <i class="bi bi-wrench-adjustable"></i>
-                    <span>${toolCall.name}</span>
+                    <span>${this.escapeHtml(toolCall.name || 'unknown')}</span>
                 </div>
                 <details class="tool-call-args-details">
                     <summary>参数</summary>
@@ -974,8 +1104,13 @@ class ZeroClawChat {
     // HTML 转义
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = text ?? '';
         return div.innerHTML;
+    }
+
+    // 安全 Markdown 渲染：先转义 HTML，再交由 marked 处理 markdown 语法
+    renderMarkdownSafe(text) {
+        return marked.parse(this.escapeHtml(text));
     }
 }
 
