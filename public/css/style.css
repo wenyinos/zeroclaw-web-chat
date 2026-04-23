@@ -206,6 +206,14 @@ body {
     box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
+.history-preview {
+    min-height: 320px;
+    white-space: pre-wrap;
+    background-color: var(--input-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+
 .connection-status {
     display: flex;
     align-items: center;

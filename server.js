@@ -76,6 +76,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
 const VERIFY_MAX_ATTEMPTS = Number(process.env.VERIFY_MAX_ATTEMPTS || 10);
 const VERIFY_WINDOW_MS = Number(process.env.VERIFY_WINDOW_MS || 10 * 60 * 1000);
 const VERIFY_BLOCK_MS = Number(process.env.VERIFY_BLOCK_MS || 15 * 60 * 1000);
+const CHAT_RECORDS_DIR = path.join(__dirname, 'chat_records');
 
 // 简单的会话存储（内存中）
 const sessions = new Map();
@@ -214,6 +215,87 @@ function registerVerifyFailure(ip) {
 
 function clearVerifyAttempts(ip) {
   verifyAttempts.delete(ip);
+}
+
+function ensureChatRecordsDir() {
+  if (!fs.existsSync(CHAT_RECORDS_DIR)) {
+    fs.mkdirSync(CHAT_RECORDS_DIR, { recursive: true });
+  }
+}
+
+function sanitizeSessionId(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(trimmed)) return '';
+  return trimmed;
+}
+
+function formatDateTimeText(value) {
+  try {
+    return new Date(value).toLocaleString('zh-CN', { hour12: false });
+  } catch {
+    return String(value);
+  }
+}
+
+function escapeMarkdown(text) {
+  return String(text ?? '').replace(/([\\`*_{}[\]()#+\-.!|>])/g, '\\$1');
+}
+
+function buildSessionMarkdown(sessionId, messages) {
+  const lines = [];
+  lines.push(`# Chat Session ${sessionId}`);
+  lines.push('');
+  lines.push(`- Session ID: \`${sessionId}\``);
+  lines.push(`- Exported At: ${new Date().toLocaleString('zh-CN', { hour12: false })}`);
+  lines.push(`- Message Count: ${messages.length}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  messages.forEach((message, index) => {
+    const role = message?.role || 'unknown';
+    const timestamp = message?.timestamp ? formatDateTimeText(message.timestamp) : 'unknown';
+    lines.push(`## ${index + 1}. ${role.toUpperCase()} (${timestamp})`);
+    lines.push('');
+
+    if (message?.toolCall) {
+      lines.push('**Tool Call**');
+      lines.push('');
+      lines.push(`- Name: \`${escapeMarkdown(message.toolCall.name || 'unknown')}\``);
+      lines.push('- Args:');
+      lines.push('```json');
+      lines.push(JSON.stringify(message.toolCall.args || {}, null, 2));
+      lines.push('```');
+      if (message.toolCall.output !== undefined) {
+        lines.push('- Output:');
+        lines.push('```text');
+        lines.push(String(message.toolCall.output || ''));
+        lines.push('```');
+      }
+    } else {
+      const content = String(message?.content || '').trim();
+      if (content) {
+        lines.push(content);
+      } else {
+        lines.push('_[empty content]_');
+      }
+      if (message?.thinking) {
+        lines.push('');
+        lines.push('<details><summary>Thinking</summary>');
+        lines.push('');
+        lines.push(String(message.thinking));
+        lines.push('');
+        lines.push('</details>');
+      }
+    }
+
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  });
+
+  return lines.join('\n');
 }
 
 function requireVerifiedSession(req, res, next) {
@@ -371,6 +453,83 @@ app.post('/api/execute', requireVerifiedSession, (req, res) => {
     const output = stdout || stderr;
     log('info', `命令执行成功，输出: ${output.length} 字符`);
     res.json({ success: true, output: output.trim() });
+  });
+});
+
+app.post('/api/sessions/save', requireVerifiedSession, (req, res) => {
+  const { sessionId, messages } = req.body || {};
+  const safeSessionId = sanitizeSessionId(sessionId);
+  if (!safeSessionId) {
+    return res.status(400).json({ success: false, error: '无效的 sessionId' });
+  }
+  if (!Array.isArray(messages)) {
+    return res.status(400).json({ success: false, error: 'messages 必须是数组' });
+  }
+
+  const normalizedMessages = messages
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      role: item.role,
+      content: item.content,
+      thinking: item.thinking,
+      timestamp: item.timestamp,
+      toolCall: item.toolCall
+    }));
+
+  ensureChatRecordsDir();
+  const filePath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
+  const markdown = buildSessionMarkdown(safeSessionId, normalizedMessages);
+  fs.writeFileSync(filePath, markdown, 'utf8');
+
+  const stat = fs.statSync(filePath);
+  return res.json({
+    success: true,
+    sessionId: safeSessionId,
+    fileName: `${safeSessionId}.md`,
+    updatedAt: stat.mtime.toISOString(),
+    size: stat.size
+  });
+});
+
+app.get('/api/sessions', requireVerifiedSession, (req, res) => {
+  ensureChatRecordsDir();
+  const files = fs.readdirSync(CHAT_RECORDS_DIR)
+    .filter((name) => name.endsWith('.md'))
+    .map((name) => {
+      const filePath = path.join(CHAT_RECORDS_DIR, name);
+      const stat = fs.statSync(filePath);
+      return {
+        sessionId: name.replace(/\.md$/i, ''),
+        fileName: name,
+        updatedAt: stat.mtime.toISOString(),
+        size: stat.size
+      };
+    })
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+  return res.json({ success: true, sessions: files });
+});
+
+app.get('/api/sessions/:sessionId', requireVerifiedSession, (req, res) => {
+  const safeSessionId = sanitizeSessionId(req.params.sessionId);
+  if (!safeSessionId) {
+    return res.status(400).json({ success: false, error: '无效的 sessionId' });
+  }
+
+  ensureChatRecordsDir();
+  const filePath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, error: '记录不存在' });
+  }
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  const stat = fs.statSync(filePath);
+  return res.json({
+    success: true,
+    sessionId: safeSessionId,
+    fileName: `${safeSessionId}.md`,
+    updatedAt: stat.mtime.toISOString(),
+    content
   });
 });
 

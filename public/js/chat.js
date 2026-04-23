@@ -23,6 +23,8 @@ class ZeroClawChat {
         this.streamingThinking = '';
         this.authEventsBound = false;
         this.chatEventsBound = false;
+        this.persistTimer = null;
+        this.historyCache = [];
 
         // DOM 元素
         this.authContainer = document.getElementById('authContainer');
@@ -38,6 +40,14 @@ class ZeroClawChat {
         this.statusText = document.getElementById('statusText');
         this.welcomeMessage = document.getElementById('welcomeMessage');
         this.themeToggleBtn = document.getElementById('themeToggleBtn');
+        this.historyBtn = document.getElementById('historyBtn');
+        this.downloadSessionBtn = document.getElementById('downloadSessionBtn');
+        this.historySessionSelect = document.getElementById('historySessionSelect');
+        this.historyPreview = document.getElementById('historyPreview');
+        this.historyMeta = document.getElementById('historyMeta');
+        this.refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
+        this.historyModal = document.getElementById('historyModal');
+        this.historyModalInstance = this.historyModal ? new bootstrap.Modal(this.historyModal) : null;
 
         // 初始化
         this.init();
@@ -348,6 +358,10 @@ class ZeroClawChat {
 
     // 退出登录
     logout() {
+        if (this.persistTimer) {
+            clearTimeout(this.persistTimer);
+            this.persistTimer = null;
+        }
         // 清除保存的密钥
         localStorage.removeItem('access_key');
         sessionStorage.removeItem('access_key');
@@ -400,6 +414,28 @@ class ZeroClawChat {
                 this.clearMessages();
             }
         });
+
+        // 会话记录
+        if (this.historyBtn) {
+            this.historyBtn.addEventListener('click', () => this.openHistoryModal());
+        }
+        if (this.downloadSessionBtn) {
+            this.downloadSessionBtn.addEventListener('click', () => this.downloadCurrentSessionRecord());
+        }
+        if (this.refreshHistoryBtn) {
+            this.refreshHistoryBtn.addEventListener('click', () => this.refreshHistorySessions());
+        }
+        if (this.historySessionSelect) {
+            this.historySessionSelect.addEventListener('change', () => {
+                const selected = this.historySessionSelect.value;
+                if (selected) {
+                    this.loadHistorySession(selected);
+                } else {
+                    this.historyMeta.textContent = '';
+                    this.historyPreview.textContent = '暂无会话记录';
+                }
+            });
+        }
 
         // 主题切换
         this.themeToggleBtn.addEventListener('click', () => {
@@ -1060,6 +1096,7 @@ class ZeroClawChat {
         if (this.welcomeMessage) {
             this.welcomeMessage.style.display = 'flex';
         }
+        this.schedulePersistSessionRecord(true);
     }
     
     // 滚动到底部
@@ -1074,6 +1111,7 @@ class ZeroClawChat {
     saveMessages() {
         try {
             localStorage.setItem(`zeroclaw_messages_${this.sessionId}`, JSON.stringify(this.messages));
+            this.schedulePersistSessionRecord();
         } catch (error) {
             console.error('保存消息失败:', error);
         }
@@ -1095,10 +1133,155 @@ class ZeroClawChat {
                 }
                 
                 this.messages.forEach(msg => this.renderMessage(msg));
+                this.schedulePersistSessionRecord();
             }
         } catch (error) {
             console.error('加载消息失败:', error);
         }
+    }
+
+    getAuthHeaders() {
+        return {
+            'Content-Type': 'application/json',
+            'X-Session-Id': this.verifiedSessionId || ''
+        };
+    }
+
+    schedulePersistSessionRecord(force = false) {
+        if (!this.verifiedSessionId) return;
+        if (this.persistTimer) {
+            clearTimeout(this.persistTimer);
+        }
+        const delay = force ? 0 : 800;
+        this.persistTimer = setTimeout(() => {
+            this.persistSessionRecord();
+        }, delay);
+    }
+
+    async persistSessionRecord() {
+        if (!this.verifiedSessionId) return;
+        if (!this.sessionId) return;
+        if (!Array.isArray(this.messages)) return;
+
+        try {
+            await fetch('/api/sessions/save', {
+                method: 'POST',
+                headers: this.getAuthHeaders(),
+                body: JSON.stringify({
+                    sessionId: this.sessionId,
+                    messages: this.messages
+                })
+            });
+        } catch (error) {
+            console.warn('保存会话记录失败:', error.message);
+        }
+    }
+
+    async openHistoryModal() {
+        await this.persistSessionRecord();
+        await this.refreshHistorySessions(true);
+        if (this.historyModalInstance) {
+            this.historyModalInstance.show();
+        }
+    }
+
+    async downloadCurrentSessionRecord() {
+        if (!this.verifiedSessionId || !this.sessionId) {
+            alert('当前会话不可用，无法下载。');
+            return;
+        }
+
+        try {
+            await this.persistSessionRecord();
+            const response = await fetch(`/api/sessions/${encodeURIComponent(this.sessionId)}`, {
+                method: 'GET',
+                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
+            });
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.error || '下载会话失败');
+            }
+
+            const fileName = result.fileName || `${this.sessionId}.md`;
+            this.downloadTextFile(fileName, result.content || '');
+        } catch (error) {
+            console.error('下载会话失败:', error);
+            alert('下载会话失败，请稍后重试。');
+        }
+    }
+
+    async refreshHistorySessions(selectCurrentSession = false) {
+        if (!this.verifiedSessionId || !this.historySessionSelect) return;
+
+        try {
+            const response = await fetch('/api/sessions', {
+                method: 'GET',
+                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
+            });
+            const result = await response.json();
+            if (!result.success || !Array.isArray(result.sessions)) {
+                throw new Error(result.error || '加载会话失败');
+            }
+
+            this.historyCache = result.sessions;
+            this.historySessionSelect.innerHTML = '<option value="">请选择会话</option>';
+
+            result.sessions.forEach((session) => {
+                const option = document.createElement('option');
+                option.value = session.sessionId;
+                option.textContent = `${session.sessionId} (${this.formatDateTime(session.updatedAt)})`;
+                this.historySessionSelect.appendChild(option);
+            });
+
+            if (result.sessions.length === 0) {
+                this.historyMeta.textContent = '';
+                this.historyPreview.textContent = '暂无会话记录';
+                return;
+            }
+
+            const preferredSessionId = selectCurrentSession ? this.sessionId : this.historySessionSelect.value;
+            const targetSession = result.sessions.find((item) => item.sessionId === preferredSessionId) || result.sessions[0];
+            this.historySessionSelect.value = targetSession.sessionId;
+            await this.loadHistorySession(targetSession.sessionId);
+        } catch (error) {
+            console.error('加载会话列表失败:', error);
+            this.historyMeta.textContent = '';
+            this.historyPreview.textContent = '加载会话记录失败';
+        }
+    }
+
+    async loadHistorySession(sessionId) {
+        if (!this.verifiedSessionId || !sessionId) return;
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+                method: 'GET',
+                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
+            });
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.error || '读取会话记录失败');
+            }
+
+            this.historyPreview.textContent = result.content || '';
+            const sizeText = this.historyCache.find((item) => item.sessionId === sessionId)?.size;
+            this.historyMeta.textContent = `会话: ${sessionId} | 更新时间: ${this.formatDateTime(result.updatedAt)}${typeof sizeText === 'number' ? ` | 文件大小: ${sizeText} bytes` : ''}`;
+        } catch (error) {
+            console.error('读取会话内容失败:', error);
+            this.historyMeta.textContent = '';
+            this.historyPreview.textContent = '读取会话记录失败';
+        }
+    }
+
+    downloadTextFile(fileName, content) {
+        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+        const downloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(downloadUrl);
     }
     
     // HTML 转义
