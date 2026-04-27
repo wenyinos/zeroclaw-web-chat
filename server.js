@@ -515,6 +515,7 @@ log('info', `🔄 WebSocket 代理: 将 /ws/chat 代理到 ${gatewayWsUrl}/ws/ch
 
 // 创建 WebSocket 服务器
 const wss = new WebSocketServer({ noServer: true });
+const WS_KEEPALIVE_INTERVAL_MS = Number(process.env.WS_KEEPALIVE_INTERVAL_MS || 25000);
 
 server.on('upgrade', (request, socket, head) => {
   let pathname = '';
@@ -553,9 +554,41 @@ server.on('upgrade', (request, socket, head) => {
       log('info', `   - 连接到 Gateway: ${targetUrl}`);
       
       const gatewayWs = new WebSocket(targetUrl);
+      let clientAlive = true;
+      let gatewayAlive = true;
+
+      const cleanupKeepalive = () => {
+        if (keepaliveTimer) {
+          clearInterval(keepaliveTimer);
+        }
+      };
+
+      const keepaliveTimer = setInterval(() => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          if (!clientAlive) {
+            log('warn', '⚠️ [WebSocket 代理] 客户端连接心跳超时，主动断开');
+            clientWs.terminate();
+          } else {
+            clientAlive = false;
+            clientWs.ping();
+          }
+        }
+
+        if (gatewayWs.readyState === WebSocket.OPEN) {
+          if (!gatewayAlive) {
+            log('warn', '⚠️ [WebSocket 代理] Gateway 连接心跳超时，主动断开');
+            gatewayWs.terminate();
+          } else {
+            gatewayAlive = false;
+            gatewayWs.ping();
+          }
+        }
+      }, WS_KEEPALIVE_INTERVAL_MS);
+      keepaliveTimer.unref();
       
       // 客户端 -> Gateway
       clientWs.on('message', (data) => {
+        clientAlive = true;
         if (gatewayWs.readyState === WebSocket.OPEN) {
           gatewayWs.send(data.toString());
         }
@@ -563,9 +596,18 @@ server.on('upgrade', (request, socket, head) => {
       
       // Gateway -> 客户端
       gatewayWs.on('message', (data) => {
+        gatewayAlive = true;
         if (clientWs.readyState === WebSocket.OPEN) {
           clientWs.send(data.toString());
         }
+      });
+
+      clientWs.on('pong', () => {
+        clientAlive = true;
+      });
+
+      gatewayWs.on('pong', () => {
+        gatewayAlive = true;
       });
       
       gatewayWs.on('open', () => {
@@ -574,6 +616,7 @@ server.on('upgrade', (request, socket, head) => {
       
       gatewayWs.on('close', (code, reason) => {
         log('info', `🔌 [WebSocket 代理] Gateway 连接已关闭 (code: ${code})`);
+        cleanupKeepalive();
         if (clientWs.readyState === WebSocket.OPEN) {
           clientWs.close(code, reason);
         }
@@ -581,6 +624,7 @@ server.on('upgrade', (request, socket, head) => {
       
       gatewayWs.on('error', (error) => {
         log('error', `❌ [WebSocket 代理] Gateway 连接错误: ${error.message}`);
+        cleanupKeepalive();
         if (clientWs.readyState === WebSocket.OPEN) {
           clientWs.close(1011, 'Gateway connection error');
         }
@@ -588,6 +632,7 @@ server.on('upgrade', (request, socket, head) => {
       
       clientWs.on('close', (code, reason) => {
         log('info', `🔌 [WebSocket 代理] 客户端连接已关闭 (code: ${code})`);
+        cleanupKeepalive();
         if (gatewayWs.readyState === WebSocket.OPEN) {
           gatewayWs.close(code, reason);
         }
@@ -595,6 +640,7 @@ server.on('upgrade', (request, socket, head) => {
       
       clientWs.on('error', (error) => {
         log('error', `❌ [WebSocket 代理] 客户端连接错误: ${error.message}`);
+        cleanupKeepalive();
         if (gatewayWs.readyState === WebSocket.OPEN) {
           gatewayWs.close();
         }

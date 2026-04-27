@@ -16,6 +16,7 @@ class ZeroClawChat {
         this.manualDisconnect = false;
         this.reconnectTimer = null;
         this.connectionWatchdogTimer = null;
+        this.connectTimeoutTimer = null;
 
         // 消息状态
         this.messages = [];
@@ -508,6 +509,7 @@ class ZeroClawChat {
         }
 
         this.clearReconnectTimer();
+        this.clearConnectTimeout();
         this.manualDisconnect = false;
 
         // 使用相对路径,通过 Web 服务器代理到 Gateway
@@ -536,6 +538,18 @@ class ZeroClawChat {
 
         // 不传递子协议以兼容 ZeroClaw v0.1.7
         this.ws = new WebSocket(fullUrl);
+        this.connectTimeoutTimer = setTimeout(() => {
+            if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+                console.warn('⚠️ [WebSocket] 连接超时，准备重连');
+                try {
+                    this.ws.close();
+                } catch {
+                    this.ws = null;
+                }
+                this.setConnected(false);
+                this.scheduleReconnect(1000, 'connect-timeout');
+            }
+        }, 10000);
 
         this.ws.onopen = () => {
             console.log('✅ [WebSocket] 连接已成功建立');
@@ -544,6 +558,7 @@ class ZeroClawChat {
             console.log('   - 协议:', this.ws.protocol || '(无子协议)');
             console.log('   - 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
             console.log('═'.repeat(60));
+            this.clearConnectTimeout();
             this.clearReconnectTimer();
             this.setConnected(true);
         };
@@ -569,6 +584,7 @@ class ZeroClawChat {
             console.log('   - Reason:', event.reason || '无');
             console.log('   -  Was Clean:', event.wasClean);
             console.log('─'.repeat(60));
+            this.clearConnectTimeout();
             this.ws = null;
             this.setConnected(false);
 
@@ -597,6 +613,9 @@ class ZeroClawChat {
             console.error('   3. 代理配置问题');
             console.error('═'.repeat(60));
             this.setConnected(false);
+            if (!this.manualDisconnect) {
+                this.scheduleReconnect(2000, 'onerror');
+            }
         };
     }
 
@@ -623,6 +642,7 @@ class ZeroClawChat {
         const { suppressReconnect = true } = options;
         this.manualDisconnect = suppressReconnect;
         this.clearReconnectTimer();
+        this.clearConnectTimeout();
         if (this.ws) {
             this.ws.close();
             this.ws = null;
@@ -639,6 +659,13 @@ class ZeroClawChat {
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+    }
+
+    clearConnectTimeout() {
+        if (this.connectTimeoutTimer) {
+            clearTimeout(this.connectTimeoutTimer);
+            this.connectTimeoutTimer = null;
         }
     }
 
