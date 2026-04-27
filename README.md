@@ -47,6 +47,37 @@ VERIFY_BLOCK_MS=900000                # optional (15 min)
 - Responsive chat width and denser typography for better on-screen information density
 - Auto keepalive and reconnect when tab becomes inactive or connection drops
 
+## Troubleshooting (WebSocket Handshake 401)
+
+If the proxy connects and then immediately drops (`1006/1011`), the Gateway handshake usually failed authentication.
+
+Verify handshake status by connecting to Gateway directly:
+
+```bash
+curl --http1.1 -sv "http://127.0.0.1:42617/ws/chat?session_id=test&token=<TOKEN>" \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "x-api-key: <TOKEN>" \
+  -H "x-zeroclaw-token: <TOKEN>" \
+  -o /dev/null
+```
+
+- `HTTP/1.1 101 Switching Protocols`: Gateway handshake is healthy; inspect proxy/frontend state.
+- `HTTP/1.1 401 Unauthorized`: Gateway pairing/token configuration mismatch.
+
+Temporary restore:
+- Set `gateway.require_pairing = false` in Gateway config, then restart daemon.
+
+Restore secure baseline (recommended):
+- Set `gateway.require_pairing = true` again.
+- Generate a new token and update both:
+  - Gateway `paired_tokens`
+  - Web Chat `.env` `ZEROCLOW_TOKEN`
+- Restart Gateway and Web Chat, then confirm handshake returns `101`.
+
 ## Security Notes
 
 - Login endpoint includes rate limiting and temporary blocking.
