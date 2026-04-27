@@ -292,7 +292,8 @@ app.get('/api/config', (req, res) => {
   log('info', '返回 Gateway 配置信息');
   res.json({
     gatewayUrl: GATEWAY_URL,
-    token: TOKEN ? '****' : null,
+    token: null,
+    hasServerToken: Boolean(TOKEN)
   });
 });
 
@@ -520,10 +521,13 @@ const WS_KEEPALIVE_INTERVAL_MS = Number(process.env.WS_KEEPALIVE_INTERVAL_MS || 
 server.on('upgrade', (request, socket, head) => {
   let pathname = '';
   let authSessionId = '';
+  let requestToken = '';
+  let parsedUrl;
   try {
-    const parsedUrl = new URL(request.url, `http://${request.headers.host}`);
+    parsedUrl = new URL(request.url, `http://${request.headers.host}`);
     pathname = parsedUrl.pathname;
     authSessionId = parsedUrl.searchParams.get('auth_session') || '';
+    requestToken = (parsedUrl.searchParams.get('token') || '').trim();
   } catch (error) {
     log('warn', `无效的升级请求 URL: ${request.url}`);
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -549,11 +553,25 @@ server.on('upgrade', (request, socket, head) => {
     wss.handleUpgrade(request, socket, head, (clientWs) => {
       log('info', `✅ [WebSocket 代理] 客户端 WebSocket 连接已建立`);
       
-      // 连接到 Gateway
-      const targetUrl = `${gatewayWsUrl}/ws/chat${request.url.includes('?') ? request.url.substring(request.url.indexOf('?')) : ''}`;
+      // 连接到 Gateway（移除仅用于本地鉴权的 auth_session 参数）
+      const gatewayToken = requestToken || TOKEN || '';
+      const gatewayQuery = new URLSearchParams(parsedUrl.searchParams);
+      gatewayQuery.delete('auth_session');
+      if (!gatewayQuery.get('token') && gatewayToken) {
+        gatewayQuery.set('token', gatewayToken);
+      }
+      const targetUrl = `${gatewayWsUrl}/ws/chat${gatewayQuery.toString() ? `?${gatewayQuery.toString()}` : ''}`;
       log('info', `   - 连接到 Gateway: ${targetUrl}`);
+      log('info', `   - Gateway 鉴权: ${gatewayToken ? '已携带 token' : '未携带 token'}`);
       
-      const gatewayWs = new WebSocket(targetUrl);
+      const gatewayHeaders = gatewayToken
+        ? {
+            Authorization: gatewayToken.startsWith('Bearer ') ? gatewayToken : `Bearer ${gatewayToken}`,
+            'x-api-key': gatewayToken,
+            'x-zeroclaw-token': gatewayToken
+          }
+        : {};
+      const gatewayWs = new WebSocket(targetUrl, { headers: gatewayHeaders });
       let clientAlive = true;
       let gatewayAlive = true;
 

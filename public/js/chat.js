@@ -82,6 +82,10 @@ class ZeroClawChat {
             // 优先使用 localStorage 中用户自定义的值
             let savedGatewayUrl = localStorage.getItem('gatewayUrl');
             let savedToken = localStorage.getItem('token');
+            if (savedToken === '****') {
+                localStorage.removeItem('token');
+                savedToken = null;
+            }
 
             // 自动修复旧的错误配置
             if (savedGatewayUrl && savedGatewayUrl.includes(':8190')) {
@@ -104,7 +108,8 @@ class ZeroClawChat {
 
             // 如果用户没有自定义配置，使用服务器配置
             this.gatewayUrl = savedGatewayUrl || serverGatewayUrl;
-            this.token = savedToken !== null ? savedToken : config.token || '';
+            const serverToken = (config.token && config.token !== '****') ? config.token : '';
+            this.token = savedToken !== null ? savedToken : serverToken;
 
             console.log('⚙️ [配置] 已加载服务器配置');
             console.log('   - Gateway URL:', this.gatewayUrl);
