@@ -371,6 +371,7 @@ class ZeroClawChat {
             this.connectionWatchdogTimer = null;
         }
         this.clearReconnectTimer();
+        this.clearConnectTimeout();
         // 清除保存的密钥
         localStorage.removeItem('access_key');
         sessionStorage.removeItem('access_key');
@@ -381,8 +382,30 @@ class ZeroClawChat {
         this.accessKey = null;
         this.verifiedSessionId = null;
         this.messages = [];
-        // 重新加载页面
-        window.location.reload();
+        this.pendingContent = '';
+        this.pendingThinking = '';
+        this.capturedThinking = '';
+        this.streamingContent = '';
+        this.streamingThinking = '';
+        this.isTyping = false;
+
+        // 清理当前会话消息视图
+        const messageEls = this.messagesWrapper ? this.messagesWrapper.querySelectorAll('.message') : [];
+        messageEls.forEach((el) => el.remove());
+        this.removeStreamingMessage();
+        if (this.welcomeMessage) {
+            this.welcomeMessage.style.display = 'flex';
+        }
+        if (this.messageInput) {
+            this.messageInput.value = '';
+            this.messageInput.style.height = 'auto';
+        }
+        if (this.authError) {
+            this.authError.classList.add('d-none');
+        }
+
+        // 不刷新页面，直接回到登录界面，避免刷新触发 502
+        this.showAuth();
     }
     
     // 生成 UUID
@@ -396,11 +419,11 @@ class ZeroClawChat {
     
     // 设置事件监听
     setupEventListeners() {
+        this.startConnectionWatchdog();
+
         if (this.chatEventsBound) {
             return;
         }
-
-        this.startConnectionWatchdog();
 
         // 发送按钮
         this.sendBtn.addEventListener('click', () => this.sendMessage());
