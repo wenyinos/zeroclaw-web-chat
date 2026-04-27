@@ -244,58 +244,28 @@ function escapeMarkdown(text) {
 
 function buildSessionMarkdown(sessionId, messages) {
   const lines = [];
-  lines.push(`# Chat Session ${sessionId}`);
-  lines.push('');
-  lines.push(`- Session ID: \`${sessionId}\``);
-  lines.push(`- Exported At: ${new Date().toLocaleString('zh-CN', { hour12: false })}`);
-  lines.push(`- Message Count: ${messages.length}`);
-  lines.push('');
-  lines.push('---');
-  lines.push('');
 
-  messages.forEach((message, index) => {
-    const role = message?.role || 'unknown';
-    const timestamp = message?.timestamp ? formatDateTimeText(message.timestamp) : 'unknown';
-    lines.push(`## ${index + 1}. ${role.toUpperCase()} (${timestamp})`);
-    lines.push('');
+  messages.forEach((message) => {
+    // 过滤工具调用及其调试输出，仅保留真实对话
+    if (message?.toolCall) return;
 
-    if (message?.toolCall) {
-      lines.push('**Tool Call**');
-      lines.push('');
-      lines.push(`- Name: \`${escapeMarkdown(message.toolCall.name || 'unknown')}\``);
-      lines.push('- Args:');
-      lines.push('```json');
-      lines.push(JSON.stringify(message.toolCall.args || {}, null, 2));
-      lines.push('```');
-      if (message.toolCall.output !== undefined) {
-        lines.push('- Output:');
-        lines.push('```text');
-        lines.push(String(message.toolCall.output || ''));
-        lines.push('```');
-      }
-    } else {
-      const content = String(message?.content || '').trim();
-      if (content) {
-        lines.push(content);
-      } else {
-        lines.push('_[empty content]_');
-      }
-      if (message?.thinking) {
-        lines.push('');
-        lines.push('<details><summary>Thinking</summary>');
-        lines.push('');
-        lines.push(String(message.thinking));
-        lines.push('');
-        lines.push('</details>');
-      }
+    const rawRole = String(message?.role || '').toLowerCase();
+    const roleLabel = rawRole === 'user' ? '用户' : '助手';
+    const content = String(message?.content || '').trim();
+    if (!content) return;
+
+    // 过滤前端注入的工具执行摘要提示
+    if (/^工具\s+`.+`\s+执行完成，输出\s+\d+\s+字符。$/.test(content)) {
+      return;
     }
 
+    lines.push(`## ${roleLabel}`);
     lines.push('');
-    lines.push('---');
+    lines.push(content);
     lines.push('');
   });
 
-  return lines.join('\n');
+  return lines.join('\n').trim();
 }
 
 function requireVerifiedSession(req, res, next) {

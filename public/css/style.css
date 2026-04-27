@@ -69,6 +69,7 @@
 
 body {
     font-family: var(--font-family);
+    font-size: clamp(13px, 0.2vw + 12px, 15px);
     background-color: var(--bg-color);
     color: var(--text-primary);
     line-height: 1.6;
@@ -245,16 +246,29 @@ body {
     gap: 0.5rem;
 }
 
+.header-actions .btn {
+    min-width: 42px;
+    height: 42px;
+    padding: 0.45rem 0.65rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.header-actions .btn i {
+    font-size: 1rem;
+}
+
 /* 消息区域 */
 .messages-container {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
+    padding: clamp(0.5rem, 0.5vw + 0.4rem, 0.9rem);
     background-color: var(--bg-color);
 }
 
 .messages-wrapper {
-    max-width: 900px;
+    max-width: min(1280px, 96vw);
     margin: 0 auto;
 }
 
@@ -277,7 +291,7 @@ body {
 .message {
     display: flex;
     gap: 0.75rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
     animation: slideIn 0.3s ease-out;
 }
 
@@ -307,11 +321,12 @@ body {
 }
 
 .message-content {
-    max-width: 70%;
-    padding: 0.75rem 1rem;
+    max-width: min(980px, 84vw);
+    padding: 0.62rem 0.85rem;
     border-radius: 0.75rem;
     word-wrap: break-word;
-    line-height: 1.6;
+    line-height: 1.45;
+    font-size: 0.92rem;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
@@ -328,8 +343,8 @@ body {
 }
 
 .message-time {
-    font-size: 0.75rem;
-    margin-top: 0.25rem;
+    font-size: 0.7rem;
+    margin-top: 0.2rem;
     opacity: 0.7;
 }
 
@@ -361,7 +376,7 @@ body {
 }
 
 .message-content p {
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.35rem;
 }
 
 .message-content p:last-child {
@@ -369,7 +384,7 @@ body {
 }
 
 .message-content ul, .message-content ol {
-    margin: 0.5rem 0;
+    margin: 0.35rem 0;
     padding-left: 1.5rem;
 }
 
@@ -535,11 +550,11 @@ body {
     flex: 1;
     resize: none;
     max-height: 150px;
-    padding: 0.75rem 1rem;
+    padding: 0.65rem 0.85rem;
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     transition: all 0.2s ease;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
 }
 
 .input-wrapper textarea:focus {
@@ -651,7 +666,12 @@ body {
 /* 响应式设计 */
 @media (max-width: 768px) {
     .message-content {
-        max-width: 85%;
+        max-width: 92vw;
+        font-size: 0.88rem;
+    }
+
+    .messages-container {
+        padding: 0.5rem;
     }
     
     .welcome-message h4 {
@@ -662,6 +682,12 @@ body {
         width: 60px;
         height: 60px;
         font-size: 30px;
+    }
+}
+
+@media (min-width: 1200px) {
+    .message-content {
+        max-width: min(1120px, 88vw);
     }
 }
 

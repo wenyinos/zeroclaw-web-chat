@@ -13,6 +13,9 @@ class ZeroClawChat {
         this.ws = null;
         this.isConnected = false;
         this.isTyping = false;
+        this.manualDisconnect = false;
+        this.reconnectTimer = null;
+        this.connectionWatchdogTimer = null;
 
         // 消息状态
         this.messages = [];
@@ -41,11 +44,11 @@ class ZeroClawChat {
         this.welcomeMessage = document.getElementById('welcomeMessage');
         this.themeToggleBtn = document.getElementById('themeToggleBtn');
         this.historyBtn = document.getElementById('historyBtn');
-        this.downloadSessionBtn = document.getElementById('downloadSessionBtn');
         this.historySessionSelect = document.getElementById('historySessionSelect');
         this.historyPreview = document.getElementById('historyPreview');
         this.historyMeta = document.getElementById('historyMeta');
         this.refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
+        this.historyDownloadBtn = document.getElementById('historyDownloadBtn');
         this.historyModal = document.getElementById('historyModal');
         this.historyModalInstance = this.historyModal ? new bootstrap.Modal(this.historyModal) : null;
 
@@ -362,12 +365,17 @@ class ZeroClawChat {
             clearTimeout(this.persistTimer);
             this.persistTimer = null;
         }
+        if (this.connectionWatchdogTimer) {
+            clearInterval(this.connectionWatchdogTimer);
+            this.connectionWatchdogTimer = null;
+        }
+        this.clearReconnectTimer();
         // 清除保存的密钥
         localStorage.removeItem('access_key');
         sessionStorage.removeItem('access_key');
         sessionStorage.removeItem('zeroclaw_verified_session');
         // 断开连接
-        this.disconnect();
+        this.disconnect({ suppressReconnect: true });
         // 重置状态
         this.accessKey = null;
         this.verifiedSessionId = null;
@@ -390,6 +398,8 @@ class ZeroClawChat {
         if (this.chatEventsBound) {
             return;
         }
+
+        this.startConnectionWatchdog();
 
         // 发送按钮
         this.sendBtn.addEventListener('click', () => this.sendMessage());
@@ -419,11 +429,14 @@ class ZeroClawChat {
         if (this.historyBtn) {
             this.historyBtn.addEventListener('click', () => this.openHistoryModal());
         }
-        if (this.downloadSessionBtn) {
-            this.downloadSessionBtn.addEventListener('click', () => this.downloadCurrentSessionRecord());
-        }
         if (this.refreshHistoryBtn) {
             this.refreshHistoryBtn.addEventListener('click', () => this.refreshHistorySessions());
+        }
+        if (this.historyDownloadBtn) {
+            this.historyDownloadBtn.addEventListener('click', () => {
+                const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
+                this.downloadSessionRecord(selectedSessionId);
+            });
         }
         if (this.historySessionSelect) {
             this.historySessionSelect.addEventListener('change', () => {
@@ -440,6 +453,13 @@ class ZeroClawChat {
         // 主题切换
         this.themeToggleBtn.addEventListener('click', () => {
             this.toggleTheme();
+        });
+
+        // 页面恢复为活动页时立即补连，避免后台断线后长期离线
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                this.ensureConnection('visibilitychange');
+            }
         });
 
         // 设置按钮
@@ -482,6 +502,14 @@ class ZeroClawChat {
     
     // 连接 WebSocket
     connect() {
+        if (!this.verifiedSessionId) return;
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+
+        this.clearReconnectTimer();
+        this.manualDisconnect = false;
+
         // 使用相对路径,通过 Web 服务器代理到 Gateway
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.host;
@@ -516,6 +544,7 @@ class ZeroClawChat {
             console.log('   - 协议:', this.ws.protocol || '(无子协议)');
             console.log('   - 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
             console.log('═'.repeat(60));
+            this.clearReconnectTimer();
             this.setConnected(true);
         };
 
@@ -540,6 +569,7 @@ class ZeroClawChat {
             console.log('   - Reason:', event.reason || '无');
             console.log('   -  Was Clean:', event.wasClean);
             console.log('─'.repeat(60));
+            this.ws = null;
             this.setConnected(false);
 
             if (event.code === 4401) {
@@ -547,14 +577,13 @@ class ZeroClawChat {
                 return;
             }
 
-            // 自动重连
-            if (event.code !== 1000 && event.code !== 1001) {
-                console.log('🔄 [WebSocket] 将在 3 秒后尝试重连...');
-                setTimeout(() => {
-                    console.log('🔄 [WebSocket] 正在重连...');
-                    this.connect();
-                }, 3000);
+            if (this.manualDisconnect) {
+                this.manualDisconnect = false;
+                return;
             }
+
+            // 自动重连（包含后台页面恢复后的异常断开场景）
+            this.scheduleReconnect(3000, `close:${event.code}`);
         };
 
         this.ws.onerror = (error) => {
@@ -590,7 +619,10 @@ class ZeroClawChat {
     }
     
     // 断开连接
-    disconnect() {
+    disconnect(options = {}) {
+        const { suppressReconnect = true } = options;
+        this.manualDisconnect = suppressReconnect;
+        this.clearReconnectTimer();
         if (this.ws) {
             this.ws.close();
             this.ws = null;
@@ -599,10 +631,41 @@ class ZeroClawChat {
     
     // 重连
     reconnect() {
-        this.disconnect();
-        setTimeout(() => {
+        this.disconnect({ suppressReconnect: true });
+        this.scheduleReconnect(500, 'manual-reconnect');
+    }
+
+    clearReconnectTimer() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+    }
+
+    scheduleReconnect(delayMs = 3000, reason = 'unknown') {
+        if (!this.verifiedSessionId) return;
+        this.clearReconnectTimer();
+        console.log(`🔄 [WebSocket] 将在 ${Math.ceil(delayMs / 1000)} 秒后尝试重连，原因: ${reason}`);
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            console.log('🔄 [WebSocket] 正在重连...');
             this.connect();
-        }, 500);
+        }, delayMs);
+    }
+
+    ensureConnection(reason = 'watchdog') {
+        if (!this.verifiedSessionId) return;
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+        this.scheduleReconnect(300, reason);
+    }
+
+    startConnectionWatchdog() {
+        if (this.connectionWatchdogTimer) return;
+        this.connectionWatchdogTimer = setInterval(() => {
+            this.ensureConnection('watchdog');
+        }, 15000);
     }
     
     // 设置连接状态
@@ -1185,15 +1248,15 @@ class ZeroClawChat {
         }
     }
 
-    async downloadCurrentSessionRecord() {
-        if (!this.verifiedSessionId || !this.sessionId) {
-            alert('当前会话不可用，无法下载。');
+    async downloadSessionRecord(sessionId) {
+        if (!this.verifiedSessionId || !sessionId) {
+            alert('请选择可下载的会话。');
             return;
         }
 
         try {
             await this.persistSessionRecord();
-            const response = await fetch(`/api/sessions/${encodeURIComponent(this.sessionId)}`, {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
                 method: 'GET',
                 headers: { 'X-Session-Id': this.verifiedSessionId || '' }
             });
@@ -1202,7 +1265,7 @@ class ZeroClawChat {
                 throw new Error(result.error || '下载会话失败');
             }
 
-            const fileName = result.fileName || `${this.sessionId}.md`;
+            const fileName = result.fileName || `${sessionId}.md`;
             this.downloadTextFile(fileName, result.content || '');
         } catch (error) {
             console.error('下载会话失败:', error);
