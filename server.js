@@ -523,11 +523,25 @@ server.on('upgrade', (request, socket, head) => {
   let authSessionId = '';
   let requestToken = '';
   let parsedUrl;
+  let normalizedSearchParams;
   try {
-    parsedUrl = new URL(request.url, `http://${request.headers.host}`);
+    const rawUpgradeUrl = String(request.url || '');
+    const normalizedUpgradeUrl = rawUpgradeUrl.replace(/&amp;/gi, '&');
+    if (rawUpgradeUrl !== normalizedUpgradeUrl) {
+      log('warn', '检测到升级请求 URL 含 HTML 实体编码，已自动规范化');
+    }
+
+    parsedUrl = new URL(normalizedUpgradeUrl, `http://${request.headers.host}`);
+    normalizedSearchParams = new URLSearchParams();
+    for (const [key, value] of parsedUrl.searchParams.entries()) {
+      // 兼容错误编码键名，如 amp;token。
+      const normalizedKey = key.replace(/^amp;/i, '');
+      normalizedSearchParams.append(normalizedKey, value);
+    }
+
     pathname = parsedUrl.pathname;
-    authSessionId = parsedUrl.searchParams.get('auth_session') || '';
-    requestToken = (parsedUrl.searchParams.get('token') || '').trim();
+    authSessionId = normalizedSearchParams.get('auth_session') || '';
+    requestToken = (normalizedSearchParams.get('token') || '').trim();
   } catch (error) {
     log('warn', `无效的升级请求 URL: ${request.url}`);
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
@@ -555,7 +569,7 @@ server.on('upgrade', (request, socket, head) => {
       
       // 连接到 Gateway（移除仅用于本地鉴权的 auth_session 参数）
       const gatewayToken = requestToken || TOKEN || '';
-      const gatewayQuery = new URLSearchParams(parsedUrl.searchParams);
+      const gatewayQuery = new URLSearchParams(normalizedSearchParams);
       gatewayQuery.delete('auth_session');
       if (!gatewayQuery.get('token') && gatewayToken) {
         gatewayQuery.set('token', gatewayToken);
