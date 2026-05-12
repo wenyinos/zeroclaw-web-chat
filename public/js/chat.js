@@ -17,6 +17,8 @@ class ZeroClawChat {
         this.reconnectTimer = null;
         this.connectionWatchdogTimer = null;
         this.connectTimeoutTimer = null;
+        this.pageHiddenAt = 0;
+        this.lastWsMessageAt = 0;
 
         // 消息状态
         this.messages = [];
@@ -486,10 +488,15 @@ class ZeroClawChat {
 
         // 页面恢复为活动页时立即补连，避免后台断线后长期离线
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) {
-                this.ensureConnection('visibilitychange');
+            if (document.hidden) {
+                this.pageHiddenAt = Date.now();
+                return;
             }
+            this.handleForegroundResume('visibilitychange');
         });
+        window.addEventListener('pageshow', () => this.handleForegroundResume('pageshow'));
+        window.addEventListener('focus', () => this.handleForegroundResume('focus'));
+        window.addEventListener('online', () => this.handleForegroundResume('online'));
 
         // 设置按钮
         const settingsBtn = document.getElementById('settingsBtn');
@@ -565,12 +572,14 @@ class ZeroClawChat {
         console.log('─'.repeat(60));
 
         // 不传递子协议以兼容 ZeroClaw v0.1.7
-        this.ws = new WebSocket(fullUrl);
+        const socket = new WebSocket(fullUrl);
+        this.ws = socket;
         this.connectTimeoutTimer = setTimeout(() => {
-            if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+            if (this.ws !== socket) return;
+            if (socket.readyState === WebSocket.CONNECTING) {
                 console.warn('⚠️ [WebSocket] 连接超时，准备重连');
                 try {
-                    this.ws.close();
+                    socket.close();
                 } catch {
                     this.ws = null;
                 }
@@ -579,19 +588,22 @@ class ZeroClawChat {
             }
         }, 10000);
 
-        this.ws.onopen = () => {
+        socket.onopen = () => {
+            if (this.ws !== socket) return;
             console.log('✅ [WebSocket] 连接已成功建立');
             console.log('📊 连接信息:');
             console.log('   - URL:', fullUrl);
-            console.log('   - 协议:', this.ws.protocol || '(无子协议)');
-            console.log('   - 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
+            console.log('   - 协议:', socket.protocol || '(无子协议)');
+            console.log('   - 状态:', socket.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
             console.log('═'.repeat(60));
             this.clearConnectTimeout();
             this.clearReconnectTimer();
             this.setConnected(true);
         };
 
-        this.ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
+            if (this.ws !== socket) return;
+            this.lastWsMessageAt = Date.now();
             try {
                 const msg = JSON.parse(event.data);
                 // 记录关键事件
@@ -604,7 +616,8 @@ class ZeroClawChat {
             }
         };
 
-        this.ws.onclose = (event) => {
+        socket.onclose = (event) => {
+            if (this.ws !== socket) return;
             console.log('─'.repeat(60));
             console.log('❌ [WebSocket] 连接已关闭');
             console.log('📊 关闭信息:');
@@ -630,7 +643,8 @@ class ZeroClawChat {
             this.scheduleReconnect(3000, `close:${event.code}`);
         };
 
-        this.ws.onerror = (error) => {
+        socket.onerror = (error) => {
+            if (this.ws !== socket) return;
             console.error('═'.repeat(60));
             console.error('❌ [WebSocket] 连接错误');
             console.error('📍 目标 URL:', fullUrl);
@@ -708,12 +722,31 @@ class ZeroClawChat {
         }, delayMs);
     }
 
-    ensureConnection(reason = 'watchdog') {
+    ensureConnection(reason = 'watchdog', immediate = false) {
         if (!this.verifiedSessionId) return;
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
             return;
         }
+        if (immediate) {
+            this.clearReconnectTimer();
+            console.log(`🔄 [WebSocket] 页面恢复，立即补连，原因: ${reason}`);
+            this.connect();
+            return;
+        }
         this.scheduleReconnect(300, reason);
+    }
+
+    handleForegroundResume(reason = 'foreground') {
+        const hiddenAt = this.pageHiddenAt;
+        this.ensureConnection(reason, true);
+        if (hiddenAt && this.lastWsMessageAt >= hiddenAt) {
+            if (this.pendingContent || this.pendingThinking) {
+                this.updateStreaming();
+            }
+            this.scrollToBottom();
+        }
+        this.setConnected(this.isConnected);
+        this.pageHiddenAt = 0;
     }
 
     startConnectionWatchdog() {
@@ -728,18 +761,25 @@ class ZeroClawChat {
         this.isConnected = connected;
         
         if (connected) {
+            const waiting = this.hasPendingResponse();
             this.statusDot.classList.remove('disconnected');
             this.statusDot.classList.add('connected');
-            this.statusText.textContent = '已连接';
+            this.statusText.textContent = waiting ? '等待回复...' : '已连接';
             this.messageInput.disabled = false;
-            this.sendBtn.disabled = false;
+            this.sendBtn.disabled = waiting;
+            this.sendBtn.innerHTML = waiting ? '<span class="spinner-border spinner-border-sm"></span>' : '<i class="bi bi-send-fill"></i>';
         } else {
             this.statusDot.classList.remove('connected');
             this.statusDot.classList.add('disconnected');
             this.statusText.textContent = '已断开';
             this.messageInput.disabled = true;
             this.sendBtn.disabled = true;
+            this.sendBtn.innerHTML = '<i class="bi bi-send-fill"></i>';
         }
+    }
+
+    hasPendingResponse() {
+        return this.isTyping || Boolean(this.pendingContent || this.pendingThinking || this.streamingContent || this.streamingThinking);
     }
     
     // 处理 WebSocket 消息
@@ -769,12 +809,14 @@ class ZeroClawChat {
                 this.isTyping = true;
                 this.pendingThinking += msg.content || '';
                 this.updateStreaming();
+                this.setConnected(this.isConnected);
                 break;
 
             case 'chunk':
                 this.isTyping = true;
                 this.pendingContent += msg.content || '';
                 this.updateStreaming();
+                this.setConnected(this.isConnected);
                 break;
 
             case 'chunk_reset':
@@ -826,6 +868,7 @@ class ZeroClawChat {
                 this.streamingThinking = '';
                 this.isTyping = false;
                 this.removeStreamingMessage();
+                this.setConnected(this.isConnected);
                 break;
             }
 
@@ -864,6 +907,7 @@ class ZeroClawChat {
                 this.pendingContent = '';
                 this.pendingThinking = '';
                 this.removeStreamingMessage();
+                this.setConnected(this.isConnected);
                 break;
         }
     }
@@ -871,7 +915,7 @@ class ZeroClawChat {
     // 发送消息
     sendMessage() {
         const content = this.messageInput.value.trim();
-        if (!content || !this.isConnected || this.isTyping) return;
+        if (!content || !this.isConnected || this.hasPendingResponse()) return;
 
         // 添加用户消息
         this.addUserMessage(content);
@@ -889,6 +933,7 @@ class ZeroClawChat {
             this.pendingContent = '';
             this.pendingThinking = '';
             this.showTypingIndicator();
+            this.setConnected(this.isConnected);
         } catch (error) {
             console.error('❌ [Gateway] 发送消息失败:', error);
             this.addAgentMessage('❌ 发送消息失败，请检查连接');
@@ -906,6 +951,7 @@ class ZeroClawChat {
             id: this.generateUUID(),
             role: 'user',
             content: content,
+            markdown: true,
             timestamp: new Date()
         };
         
@@ -1078,7 +1124,7 @@ class ZeroClawChat {
         if (this.streamingContent) {
             contentText.innerHTML = this.renderMarkdownSafe(this.streamingContent);
         } else {
-            contentText.innerHTML = '<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+            contentText.innerHTML = '<div class="typing-indicator" aria-live="polite" aria-label="正在等待回复"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div><span class="ms-2 text-muted">正在等待回复...</span></div>';
         }
         
         this.scrollToBottom();

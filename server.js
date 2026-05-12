@@ -517,6 +517,7 @@ log('info', `🔄 WebSocket 代理: 将 /ws/chat 代理到 ${gatewayWsUrl}/ws/ch
 // 创建 WebSocket 服务器
 const wss = new WebSocketServer({ noServer: true });
 const WS_KEEPALIVE_INTERVAL_MS = Number(process.env.WS_KEEPALIVE_INTERVAL_MS || 25000);
+const WS_KEEPALIVE_MAX_MISSES = Number(process.env.WS_KEEPALIVE_MAX_MISSES || 6);
 
 server.on('upgrade', (request, socket, head) => {
   let pathname = '';
@@ -588,6 +589,8 @@ server.on('upgrade', (request, socket, head) => {
       const gatewayWs = new WebSocket(targetUrl, { headers: gatewayHeaders });
       let clientAlive = true;
       let gatewayAlive = true;
+      let clientMisses = 0;
+      let gatewayMisses = 0;
 
       const cleanupKeepalive = () => {
         if (keepaliveTimer) {
@@ -598,9 +601,13 @@ server.on('upgrade', (request, socket, head) => {
       const keepaliveTimer = setInterval(() => {
         if (clientWs.readyState === WebSocket.OPEN) {
           if (!clientAlive) {
-            log('warn', '⚠️ [WebSocket 代理] 客户端连接心跳超时，主动断开');
-            clientWs.terminate();
+            clientMisses += 1;
+            if (clientMisses >= WS_KEEPALIVE_MAX_MISSES) {
+              log('warn', '⚠️ [WebSocket 代理] 客户端连接心跳超时，主动断开');
+              clientWs.terminate();
+            }
           } else {
+            clientMisses = 0;
             clientAlive = false;
             clientWs.ping();
           }
@@ -608,9 +615,13 @@ server.on('upgrade', (request, socket, head) => {
 
         if (gatewayWs.readyState === WebSocket.OPEN) {
           if (!gatewayAlive) {
-            log('warn', '⚠️ [WebSocket 代理] Gateway 连接心跳超时，主动断开');
-            gatewayWs.terminate();
+            gatewayMisses += 1;
+            if (gatewayMisses >= WS_KEEPALIVE_MAX_MISSES) {
+              log('warn', '⚠️ [WebSocket 代理] Gateway 连接心跳超时，主动断开');
+              gatewayWs.terminate();
+            }
           } else {
+            gatewayMisses = 0;
             gatewayAlive = false;
             gatewayWs.ping();
           }
@@ -636,10 +647,12 @@ server.on('upgrade', (request, socket, head) => {
 
       clientWs.on('pong', () => {
         clientAlive = true;
+        clientMisses = 0;
       });
 
       gatewayWs.on('pong', () => {
         gatewayAlive = true;
+        gatewayMisses = 0;
       });
       
       gatewayWs.on('open', () => {
