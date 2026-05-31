@@ -25,10 +25,15 @@ Sign in with `ACCESS_KEY` from your `.env` file.
 ## Environment Variables (`.env`)
 
 ```env
+# AI backend: zeroclaw | picoclaw
+AI_BACKEND=zeroclaw
+
 ZEROCLOW_GATEWAY_URL=http://localhost:42617
+PICOCLAW_GATEWAY_URL=http://localhost:18790
 PORT=3332
 ACCESS_KEY=replace-with-strong-key
 ZEROCLOW_TOKEN=your-token             # optional
+PICOCLAW_TOKEN=your-token             # optional
 SESSION_TTL_MS=43200000               # optional, default: 12h
 ALLOWED_ORIGINS=http://localhost:3332 # optional, comma-separated
 VERIFY_MAX_ATTEMPTS=10                # optional
@@ -39,10 +44,13 @@ VERIFY_BLOCK_MS=900000                # optional (15 min)
 ## Core Features
 
 - Access-key authentication with server-side session verification
+- **Multi-backend support**: Switch between ZeroClaw and PicoClaw via `AI_BACKEND` environment variable
 - Streaming WebSocket chat (`/ws/chat` proxied to Gateway)
+- **Image upload**: Send images to PicoClaw for vision recognition (PicoClaw mode only)
 - Markdown rendering with light/dark theme
-- Auto-saved chat records in `chat_records/<sessionId>.md`
-- Session record modal for view, refresh, and download (download entry merged into history modal)
+- Auto-saved chat records in `chat_records/<sessionId>.md` + `.json`
+- **Session management**: New chat, resume previous session, delete session
+- Session record modal for view, refresh, and download
 - Exported records keep only dialogue content (user/assistant), filtering tool/debug details
 - Responsive chat width and denser typography for better on-screen information density
 - Auto keepalive and reconnect when tab becomes inactive or connection drops

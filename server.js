@@ -68,6 +68,12 @@ const PORT = process.env.PORT || 3332;
 const GATEWAY_URL = process.env.ZEROCLOW_GATEWAY_URL || 'http://localhost:8190';
 const TOKEN = process.env.ZEROCLOW_TOKEN;
 const ACCESS_KEY = process.env.ACCESS_KEY || 'zeroclaw2026'; // 默认访问密钥
+
+// AI 后端选择
+const AI_BACKEND = (process.env.AI_BACKEND || 'zeroclaw').toLowerCase();
+const USE_PICOCLAW = AI_BACKEND === 'picoclaw';
+const PICOCLAW_URL = process.env.PICOCLAW_GATEWAY_URL || 'http://localhost:18790';
+const PICOCLAW_TOKEN = process.env.PICOCLAW_TOKEN || '';
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -290,10 +296,13 @@ if (ACCESS_KEY === 'zeroclaw2026') {
 // API 路由 - 获取配置
 app.get('/api/config', (req, res) => {
   log('info', '返回 Gateway 配置信息');
+  const activeUrl = USE_PICOCLAW ? PICOCLAW_URL : GATEWAY_URL;
+  const activeToken = USE_PICOCLAW ? PICOCLAW_TOKEN : TOKEN;
   res.json({
-    gatewayUrl: GATEWAY_URL,
-    token: null,
-    hasServerToken: Boolean(TOKEN)
+    gatewayUrl: activeUrl,
+    token: activeToken || null,
+    hasServerToken: Boolean(activeToken),
+    backend: USE_PICOCLAW ? 'picoclaw' : 'zeroclaw'
   });
 });
 
@@ -444,15 +453,18 @@ app.post('/api/sessions/save', requireVerifiedSession, (req, res) => {
       content: item.content,
       thinking: item.thinking,
       timestamp: item.timestamp,
-      toolCall: item.toolCall
+      toolCall: item.toolCall,
+      images: item.images
     }));
 
   ensureChatRecordsDir();
-  const filePath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
+  const mdPath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
+  const jsonPath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.json`);
   const markdown = buildSessionMarkdown(safeSessionId, normalizedMessages);
-  fs.writeFileSync(filePath, markdown, 'utf8');
+  fs.writeFileSync(mdPath, markdown, 'utf8');
+  fs.writeFileSync(jsonPath, JSON.stringify(normalizedMessages, null, 2), 'utf8');
 
-  const stat = fs.statSync(filePath);
+  const stat = fs.statSync(mdPath);
   return res.json({
     success: true,
     sessionId: safeSessionId,
@@ -488,20 +500,53 @@ app.get('/api/sessions/:sessionId', requireVerifiedSession, (req, res) => {
   }
 
   ensureChatRecordsDir();
-  const filePath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
-  if (!fs.existsSync(filePath)) {
+  const mdPath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
+  const jsonPath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.json`);
+
+  if (!fs.existsSync(mdPath)) {
     return res.status(404).json({ success: false, error: '记录不存在' });
   }
 
-  const content = fs.readFileSync(filePath, 'utf8');
-  const stat = fs.statSync(filePath);
+  const content = fs.readFileSync(mdPath, 'utf8');
+  const stat = fs.statSync(mdPath);
+
+  let messages = [];
+  if (fs.existsSync(jsonPath)) {
+    try {
+      messages = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    } catch (e) { /* ignore */ }
+  }
+
   return res.json({
     success: true,
     sessionId: safeSessionId,
     fileName: `${safeSessionId}.md`,
     updatedAt: stat.mtime.toISOString(),
-    content
+    content,
+    messages
   });
+});
+
+app.delete('/api/sessions/:sessionId', requireVerifiedSession, (req, res) => {
+  const safeSessionId = sanitizeSessionId(req.params.sessionId);
+  if (!safeSessionId) {
+    return res.status(400).json({ success: false, error: '无效的 sessionId' });
+  }
+
+  ensureChatRecordsDir();
+  const mdPath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.md`);
+  const jsonPath = path.join(CHAT_RECORDS_DIR, `${safeSessionId}.json`);
+
+  if (!fs.existsSync(mdPath)) {
+    return res.status(404).json({ success: false, error: '记录不存在' });
+  }
+
+  fs.unlinkSync(mdPath);
+  if (fs.existsSync(jsonPath)) {
+    fs.unlinkSync(jsonPath);
+  }
+  log('info', `删除会话记录: ${safeSessionId}`);
+  return res.json({ success: true, sessionId: safeSessionId });
 });
 
 // 错误处理中间件
@@ -511,8 +556,12 @@ app.use((err, req, res, next) => {
 });
 
 // WebSocket 代理
-const gatewayWsUrl = GATEWAY_URL.replace(/^http/, 'ws');
-log('info', `🔄 WebSocket 代理: 将 /ws/chat 代理到 ${gatewayWsUrl}/ws/chat`);
+const gatewayWsUrl = USE_PICOCLAW
+  ? PICOCLAW_URL.replace(/^http/, 'ws')
+  : GATEWAY_URL.replace(/^http/, 'ws');
+const gatewayWsPath = USE_PICOCLAW ? '/pico/ws' : '/ws/chat';
+log('info', `🔄 WebSocket 代理: 将 /ws/chat 代理到 ${gatewayWsUrl}${gatewayWsPath}`);
+log('info', `   - 后端: ${USE_PICOCLAW ? 'PicoClaw' : 'ZeroClaw'}`);
 
 // 创建 WebSocket 服务器
 const wss = new WebSocketServer({ noServer: true });
@@ -569,21 +618,20 @@ server.on('upgrade', (request, socket, head) => {
       log('info', `✅ [WebSocket 代理] 客户端 WebSocket 连接已建立`);
       
       // 连接到 Gateway（移除仅用于本地鉴权的 auth_session 参数）
-      const gatewayToken = requestToken || TOKEN || '';
+      const gatewayToken = USE_PICOCLAW ? (PICOCLAW_TOKEN || '') : (requestToken || TOKEN || '');
       const gatewayQuery = new URLSearchParams(normalizedSearchParams);
       gatewayQuery.delete('auth_session');
-      if (!gatewayQuery.get('token') && gatewayToken) {
+      if (!gatewayQuery.get('token') && gatewayToken && !USE_PICOCLAW) {
         gatewayQuery.set('token', gatewayToken);
       }
-      const targetUrl = `${gatewayWsUrl}/ws/chat${gatewayQuery.toString() ? `?${gatewayQuery.toString()}` : ''}`;
+      const targetUrl = `${gatewayWsUrl}${gatewayWsPath}${gatewayQuery.toString() && !USE_PICOCLAW ? `?${gatewayQuery.toString()}` : ''}`;
       log('info', `   - 连接到 Gateway: ${targetUrl}`);
       log('info', `   - Gateway 鉴权: ${gatewayToken ? '已携带 token' : '未携带 token'}`);
-      
+
       const gatewayHeaders = gatewayToken
         ? {
             Authorization: gatewayToken.startsWith('Bearer ') ? gatewayToken : `Bearer ${gatewayToken}`,
-            'x-api-key': gatewayToken,
-            'x-zeroclaw-token': gatewayToken
+            ...(USE_PICOCLAW ? {} : { 'x-api-key': gatewayToken, 'x-zeroclaw-token': gatewayToken })
           }
         : {};
       const gatewayWs = new WebSocket(targetUrl, { headers: gatewayHeaders });
@@ -591,6 +639,8 @@ server.on('upgrade', (request, socket, head) => {
       let gatewayAlive = true;
       let clientMisses = 0;
       let gatewayMisses = 0;
+      let gatewayReady = false;
+      const pendingMessages = [];
 
       const cleanupKeepalive = () => {
         if (keepaliveTimer) {
@@ -629,19 +679,83 @@ server.on('upgrade', (request, socket, head) => {
       }, WS_KEEPALIVE_INTERVAL_MS);
       keepaliveTimer.unref();
       
-      // 客户端 -> Gateway
+      // 客户端 -> Gateway（协议转换）
+      let picoMsgId = 0;
+
+      const sendToGateway = (raw) => {
+        if (USE_PICOCLAW) {
+          try {
+            const msg = JSON.parse(raw);
+            if (msg.type === 'message') {
+              picoMsgId += 1;
+              const payload = { content: msg.content };
+              if (msg.images && Array.isArray(msg.images)) {
+                payload.media = msg.images;
+              }
+              const outMsg = JSON.stringify({
+                type: 'message.send',
+                id: `msg-${picoMsgId}`,
+                payload
+              });
+              gatewayWs.send(outMsg);
+              return;
+            }
+          } catch (e) { /* 非 JSON，直接转发 */ }
+        }
+        gatewayWs.send(raw);
+      };
+
       clientWs.on('message', (data) => {
         clientAlive = true;
-        if (gatewayWs.readyState === WebSocket.OPEN) {
-          gatewayWs.send(data.toString());
+        const raw = data.toString();
+        if (gatewayReady) {
+          sendToGateway(raw);
+        } else {
+          pendingMessages.push(raw);
         }
       });
-      
-      // Gateway -> 客户端
+
+      // Gateway -> 客户端（协议转换）
       gatewayWs.on('message', (data) => {
         gatewayAlive = true;
         if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(data.toString());
+          const raw = data.toString();
+          if (USE_PICOCLAW) {
+            try {
+              const msg = JSON.parse(raw);
+              // picoclaw typing.start/stop → zeroclaw typing.start/stop（兼容）
+              if (msg.type === 'typing.start' || msg.type === 'typing.stop') {
+                clientWs.send(JSON.stringify({ type: msg.type }));
+                return;
+              }
+              // picoclaw message.create → zeroclaw message
+              if (msg.type === 'message.create' && msg.payload) {
+                const p = msg.payload;
+                if (p.thought) {
+                  // 思考内容
+                  clientWs.send(JSON.stringify({ type: 'thinking', content: p.content }));
+                } else {
+                  // 普通消息
+                  clientWs.send(JSON.stringify({
+                    type: 'message',
+                    content: p.content,
+                    context_usage: p.context_usage
+                  }));
+                }
+                return;
+              }
+              // picoclaw error → zeroclaw error（兼容）
+              if (msg.type === 'error') {
+                clientWs.send(JSON.stringify({
+                  type: 'error',
+                  code: msg.payload?.code || 'unknown',
+                  message: msg.payload?.message || 'Unknown error'
+                }));
+                return;
+              }
+            } catch (e) { /* 非 JSON，直接转发 */ }
+          }
+          clientWs.send(raw);
         }
       });
 
@@ -654,9 +768,14 @@ server.on('upgrade', (request, socket, head) => {
         gatewayAlive = true;
         gatewayMisses = 0;
       });
-      
+
       gatewayWs.on('open', () => {
         log('info', `✅ [WebSocket 代理] 已连接到 Gateway`);
+        gatewayReady = true;
+        // 发送缓存的消息
+        while (pendingMessages.length > 0) {
+          sendToGateway(pendingMessages.shift());
+        }
       });
       
       gatewayWs.on('close', (code, reason) => {
@@ -679,7 +798,9 @@ server.on('upgrade', (request, socket, head) => {
         log('info', `🔌 [WebSocket 代理] 客户端连接已关闭 (code: ${code})`);
         cleanupKeepalive();
         if (gatewayWs.readyState === WebSocket.OPEN) {
-          gatewayWs.close(code, reason);
+          // 1005 和 1006 是保留码，不能用于关闭
+          const closeCode = (code === 1005 || code === 1006) ? 1000 : code;
+          gatewayWs.close(closeCode, reason);
         }
       });
       

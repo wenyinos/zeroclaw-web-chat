@@ -4,3 +4,4 @@ node_modules/
 .qwen/
 .idea/
 .codex
+chat_records/

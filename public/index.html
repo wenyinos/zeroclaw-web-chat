@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow">
-    <title>ZeroClaw Web Chat</title>
+    <title>Claw Agent</title>
     <link rel="icon" href="favicon/favicon.ico" type="image/x-icon">
     <link rel="apple-touch-icon" href="favicon/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="16x16" href="favicon/favicon-16x16.png">
@@ -70,7 +70,7 @@
                             <i class="bi bi-robot"></i>
                         </div>
                         <div>
-                            <h5 class="mb-0">ZeroClaw Agent</h5>
+                            <h5 class="mb-0">Claw Agent</h5>
                             <div class="connection-status">
                                 <span class="status-dot" id="statusDot"></span>
                                 <span id="statusText">连接中...</span>
@@ -78,17 +78,14 @@
                         </div>
                     </div>
                     <div class="header-actions">
+                        <button class="btn btn-sm btn-outline-secondary" id="newChatBtn" title="新建会话">
+                            <i class="bi bi-plus-lg"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-secondary" id="themeToggleBtn" title="切换主题">
                             <i class="bi bi-moon-fill"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-secondary" id="historyBtn" title="会话记录">
                             <i class="bi bi-clock-history"></i>
-                        </button>
-                        <button class="btn btn-sm btn-outline-secondary" id="clearChatBtn" title="清空对话">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                        <button class="btn btn-sm btn-outline-secondary" id="settingsBtn" title="设置">
-                            <i class="bi bi-gear"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-secondary" id="logoutBtn" title="退出登录">
                             <i class="bi bi-box-arrow-right"></i>
@@ -106,7 +103,7 @@
                     <div class="bot-avatar large">
                         <i class="bi bi-robot"></i>
                     </div>
-                    <h4>ZeroClaw AI 助手</h4>
+                    <h4>Claw Agent</h4>
                     <p class="text-muted">开始对话吧！我可以帮您执行任务、回答问题</p>
                 </div>
                 
@@ -117,11 +114,18 @@
         <!-- 输入区域 -->
         <div class="input-area">
             <div class="container-fluid px-4 py-3">
+                <div id="imagePreviewContainer" class="d-none mb-2">
+                    <div class="d-flex flex-wrap gap-2" id="imagePreviewList"></div>
+                </div>
                 <div class="input-wrapper">
-                    <textarea 
-                        id="messageInput" 
-                        class="form-control" 
-                        rows="1" 
+                    <button class="btn btn-outline-secondary" id="imageUploadBtn" title="上传图片" style="display:none;">
+                        <i class="bi bi-image"></i>
+                    </button>
+                    <input type="file" id="imageUploadInput" accept="image/*" multiple class="d-none">
+                    <textarea
+                        id="messageInput"
+                        class="form-control"
+                        rows="1"
                         placeholder="输入消息..."
                         disabled
                     ></textarea>
@@ -146,6 +150,10 @@
                         <a href="https://github.com/zeroclaw-labs/zeroclaw" target="_blank" rel="noopener noreferrer" class="github-link">
                             <i class="bi bi-github me-1"></i>ZeroClaw
                         </a>
+                        |
+                        <a href="https://github.com/sipeed/picoclaw" target="_blank" rel="noopener noreferrer" class="github-link">
+                            <i class="bi bi-github me-1"></i>PicoClaw
+                        </a>
                     </p>
                 </div>
             </div>
@@ -167,35 +175,11 @@
                         </select>
                         <button class="btn btn-outline-secondary" id="refreshHistoryBtn" type="button">刷新</button>
                         <button class="btn btn-outline-primary" id="historyDownloadBtn" type="button">下载</button>
+                        <button class="btn btn-success" id="historyResumeBtn" type="button">继续聊天</button>
+                        <button class="btn btn-outline-danger" id="historyDeleteBtn" type="button">删除</button>
                     </div>
                     <div class="small text-muted mb-2" id="historyMeta"></div>
                     <pre class="history-preview rounded p-3 small mb-0" id="historyPreview">暂无会话记录</pre>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 设置模态框 -->
-    <div class="modal fade" id="settingsModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">设置</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="mb-3">
-                        <label for="gatewayUrl" class="form-label">Gateway 地址</label>
-                        <input type="text" class="form-control" id="gatewayUrl" value="http://localhost:8190">
-                    </div>
-                    <div class="mb-3">
-                        <label for="token" class="form-label">认证令牌（可选）</label>
-                        <input type="password" class="form-control" id="token" placeholder="留空表示不需要认证">
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button type="button" class="btn btn-primary" id="saveSettingsBtn">保存</button>
                 </div>
             </div>
         </div>

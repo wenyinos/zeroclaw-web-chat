@@ -5,9 +5,13 @@ class ZeroClawChat {
         // 配置（优先从服务器 API 获取，其次 localStorage，最后默认值）
         this.gatewayUrl = null;  // 将从 /api/config 加载
         this.token = null;       // 将从 /api/config 加载
+        this.backend = 'zeroclaw'; // 后端类型
         this.sessionId = this.getOrCreateSessionId();
         this.verifiedSessionId = sessionStorage.getItem('zeroclaw_verified_session') || null;
         this.accessKey = null;
+
+        // 图片上传（仅 picoclaw 支持）
+        this.pendingImages = [];
 
         // WebSocket 连接
         this.ws = null;
@@ -45,6 +49,7 @@ class ZeroClawChat {
         this.statusDot = document.getElementById('statusDot');
         this.statusText = document.getElementById('statusText');
         this.welcomeMessage = document.getElementById('welcomeMessage');
+        this.newChatBtn = document.getElementById('newChatBtn');
         this.themeToggleBtn = document.getElementById('themeToggleBtn');
         this.historyBtn = document.getElementById('historyBtn');
         this.historySessionSelect = document.getElementById('historySessionSelect');
@@ -52,6 +57,8 @@ class ZeroClawChat {
         this.historyMeta = document.getElementById('historyMeta');
         this.refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
         this.historyDownloadBtn = document.getElementById('historyDownloadBtn');
+        this.historyResumeBtn = document.getElementById('historyResumeBtn');
+        this.historyDeleteBtn = document.getElementById('historyDeleteBtn');
         this.historyModal = document.getElementById('historyModal');
         this.historyModalInstance = this.historyModal ? new bootstrap.Modal(this.historyModal) : null;
 
@@ -81,45 +88,24 @@ class ZeroClawChat {
             const response = await fetch('/api/config');
             const config = await response.json();
 
-            // 优先使用 localStorage 中用户自定义的值
-            let savedGatewayUrl = localStorage.getItem('gatewayUrl');
-            let savedToken = localStorage.getItem('token');
-            if (savedToken === '****') {
-                localStorage.removeItem('token');
-                savedToken = null;
-            }
-
-            // 自动修复旧的错误配置
-            if (savedGatewayUrl && savedGatewayUrl.includes(':8190')) {
-                console.log('⚠️ [配置] 检测到旧的错误配置 (:8190)，自动修复');
-                localStorage.removeItem('gatewayUrl');
-                savedGatewayUrl = null;
-            }
-
-            // 智能处理 Gateway URL
-            let serverGatewayUrl = config.gatewayUrl || 'http://localhost:42617';
-            
-            // 如果服务器返回的 Gateway URL 是 localhost,则使用当前页面的 hostname
-            // 这样可以适配手机端访问
-            if (serverGatewayUrl.includes('localhost') || serverGatewayUrl.includes('127.0.0.1')) {
-                const currentHost = window.location.hostname;
-                const gatewayPort = new URL(serverGatewayUrl).port;
-                serverGatewayUrl = `http://${currentHost}:${gatewayPort}`;
-                console.log('⚙️ [配置] 自动替换 localhost 为当前主机地址:', serverGatewayUrl);
-            }
-
-            // 如果用户没有自定义配置，使用服务器配置
-            this.gatewayUrl = savedGatewayUrl || serverGatewayUrl;
-            const serverToken = (config.token && config.token !== '****') ? config.token : '';
-            this.token = savedToken !== null ? savedToken : serverToken;
+            this.gatewayUrl = config.gatewayUrl || 'http://localhost:42617';
+            this.token = config.token || '';
+            this.backend = config.backend || 'zeroclaw';
 
             console.log('⚙️ [配置] 已加载服务器配置');
+            console.log('   - Backend:', this.backend);
             console.log('   - Gateway URL:', this.gatewayUrl);
             console.log('   - Token:', this.token ? '已配置' : '未配置');
+
+            // picoclaw 模式下显示图片上传按钮
+            if (this.backend === 'picoclaw') {
+                const btn = document.getElementById('imageUploadBtn');
+                if (btn) btn.style.display = '';
+            }
         } catch (error) {
             console.warn('⚠️ [配置] 无法加载服务器配置，使用默认值');
-            this.gatewayUrl = localStorage.getItem('gatewayUrl') || 'http://localhost:42617';
-            this.token = localStorage.getItem('token') || '';
+            this.gatewayUrl = 'http://localhost:42617';
+            this.token = '';
         }
     }
     
@@ -449,12 +435,10 @@ class ZeroClawChat {
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
         
-        // 清空聊天
-        document.getElementById('clearChatBtn').addEventListener('click', () => {
-            if (confirm('确定要清空对话吗？')) {
-                this.clearMessages();
-            }
-        });
+        // 新建会话
+        if (this.newChatBtn) {
+            this.newChatBtn.addEventListener('click', () => this.createNewChat());
+        }
 
         // 会话记录
         if (this.historyBtn) {
@@ -467,6 +451,22 @@ class ZeroClawChat {
             this.historyDownloadBtn.addEventListener('click', () => {
                 const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
                 this.downloadSessionRecord(selectedSessionId);
+            });
+        }
+        if (this.historyResumeBtn) {
+            this.historyResumeBtn.addEventListener('click', () => {
+                const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
+                if (selectedSessionId && confirm('将切换到该会话继续聊天，当前未保存的消息将丢失。')) {
+                    this.resumeSession(selectedSessionId);
+                }
+            });
+        }
+        if (this.historyDeleteBtn) {
+            this.historyDeleteBtn.addEventListener('click', () => {
+                const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
+                if (selectedSessionId && confirm('确定要删除该会话记录吗？此操作不可恢复。')) {
+                    this.deleteSession(selectedSessionId);
+                }
             });
         }
         if (this.historySessionSelect) {
@@ -498,39 +498,19 @@ class ZeroClawChat {
         window.addEventListener('focus', () => this.handleForegroundResume('focus'));
         window.addEventListener('online', () => this.handleForegroundResume('online'));
 
-        // 设置按钮
-        const settingsBtn = document.getElementById('settingsBtn');
-        settingsBtn.addEventListener('click', () => {
-            const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
-            document.getElementById('gatewayUrl').value = this.gatewayUrl;
-            document.getElementById('token').value = this.token;
-            modal.show();
-        });
+        // 图片上传（仅 picoclaw）
+        const imageUploadBtn = document.getElementById('imageUploadBtn');
+        const imageUploadInput = document.getElementById('imageUploadInput');
+        if (imageUploadBtn && imageUploadInput) {
+            imageUploadBtn.addEventListener('click', () => imageUploadInput.click());
+            imageUploadInput.addEventListener('change', (e) => this.handleImageUpload(e));
+        }
 
         // 退出登录
         document.getElementById('logoutBtn').addEventListener('click', () => {
             if (confirm('确定要退出登录吗？')) {
                 this.logout();
             }
-        });
-        
-        // 保存设置
-        document.getElementById('saveSettingsBtn').addEventListener('click', () => {
-            const oldGatewayUrl = this.gatewayUrl;
-            const oldToken = this.token;
-            
-            this.gatewayUrl = document.getElementById('gatewayUrl').value;
-            this.token = document.getElementById('token').value;
-            localStorage.setItem('gatewayUrl', this.gatewayUrl);
-            localStorage.setItem('token', this.token);
-            
-            console.log('⚙️ [Gateway] 配置已更新');
-            console.log('   - Gateway URL:', oldGatewayUrl, '→', this.gatewayUrl);
-            console.log('   - Token:', oldToken ? '(已配置)' : '(未配置)', '→', this.token ? '(已配置)' : '(未配置)');
-            console.log('   - 正在重新连接...');
-            
-            bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
-            this.reconnect();
         });
 
         this.chatEventsBound = true;
@@ -915,19 +895,23 @@ class ZeroClawChat {
     // 发送消息
     sendMessage() {
         const content = this.messageInput.value.trim();
-        if (!content || !this.isConnected || this.hasPendingResponse()) return;
+        if ((!content && this.pendingImages.length === 0) || !this.isConnected || this.hasPendingResponse()) return;
 
         // 添加用户消息
-        this.addUserMessage(content);
+        this.addUserMessage(content, this.pendingImages.length > 0 ? [...this.pendingImages] : null);
 
         // 发送到服务器
         try {
-            const msgData = JSON.stringify({ type: 'message', content });
+            const msg = { type: 'message', content };
+            if (this.pendingImages.length > 0) {
+                msg.images = [...this.pendingImages];
+            }
+            const msgData = JSON.stringify(msg);
             console.log('📤 [Gateway] 发送消息');
             console.log('   - 内容长度:', content.length, '字符');
-            console.log('   - 内容预览:', content.substring(0, 50) + (content.length > 50 ? '...' : ''));
+            console.log('   - 图片数量:', this.pendingImages.length);
             console.log('   - WebSocket 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'CLOSED');
-            
+
             this.ws.send(msgData);
             this.isTyping = true;
             this.pendingContent = '';
@@ -939,22 +923,91 @@ class ZeroClawChat {
             this.addAgentMessage('❌ 发送消息失败，请检查连接');
         }
 
-        // 清空输入框
+        // 清空输入框和待发送图片
         this.messageInput.value = '';
         this.messageInput.style.height = 'auto';
         this.messageInput.focus();
+        this.clearPendingImages();
+    }
+
+    // 处理图片上传
+    handleImageUpload(event) {
+        const files = Array.from(event.target.files);
+        if (files.length === 0) return;
+
+        const container = document.getElementById('imagePreviewContainer');
+        const list = document.getElementById('imagePreviewList');
+
+        files.forEach(file => {
+            if (!file.type.startsWith('image/')) return;
+            if (file.size > 10 * 1024 * 1024) {
+                alert('图片大小不能超过 10MB');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const dataUrl = e.target.result;
+                this.pendingImages.push(dataUrl);
+
+                // 添加预览
+                const preview = document.createElement('div');
+                preview.className = 'position-relative d-inline-block';
+                preview.innerHTML = `
+                    <img src="${dataUrl}" style="height:60px;border-radius:4px;" class="border">
+                    <button class="btn btn-sm btn-danger position-absolute top-0 end-0 p-0 lh-1"
+                            style="width:18px;height:18px;font-size:10px;border-radius:50%;"
+                            onclick="window.chat.removePendingImage(${this.pendingImages.length - 1}, this.parentElement)">
+                        <i class="bi bi-x"></i>
+                    </button>
+                `;
+                list.appendChild(preview);
+                container.classList.remove('d-none');
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // 清空 input 允许重复选择同一文件
+        event.target.value = '';
+    }
+
+    // 移除待发送图片
+    removePendingImage(index, element) {
+        this.pendingImages.splice(index, 1);
+        element.remove();
+        if (this.pendingImages.length === 0) {
+            document.getElementById('imagePreviewContainer').classList.add('d-none');
+        }
+        // 重新绑定索引
+        const list = document.getElementById('imagePreviewList');
+        list.querySelectorAll('.position-relative').forEach((el, i) => {
+            const btn = el.querySelector('button');
+            if (btn) {
+                btn.setAttribute('onclick', `window.chat.removePendingImage(${i}, this.parentElement)`);
+            }
+        });
+    }
+
+    // 清空待发送图片
+    clearPendingImages() {
+        this.pendingImages = [];
+        const list = document.getElementById('imagePreviewList');
+        if (list) list.innerHTML = '';
+        const container = document.getElementById('imagePreviewContainer');
+        if (container) container.classList.add('d-none');
     }
     
     // 添加用户消息
-    addUserMessage(content) {
+    addUserMessage(content, images = null) {
         const message = {
             id: this.generateUUID(),
             role: 'user',
             content: content,
+            images: images,
             markdown: true,
             timestamp: new Date()
         };
-        
+
         this.messages.push(message);
         this.renderMessage(message);
         this.saveMessages();
@@ -1252,15 +1305,40 @@ class ZeroClawChat {
     clearMessages() {
         this.messages = [];
         localStorage.removeItem(`zeroclaw_messages_${this.sessionId}`);
-        
+
         // 清空 DOM
         const messageEls = this.messagesWrapper.querySelectorAll('.message');
         messageEls.forEach(el => el.remove());
-        
+
         if (this.welcomeMessage) {
             this.welcomeMessage.style.display = 'flex';
         }
         this.schedulePersistSessionRecord(true);
+    }
+
+    createNewChat() {
+        this.persistSessionRecord().then(() => {
+            this.messages = [];
+            this.sessionId = this.generateUUID();
+            sessionStorage.setItem('zeroclaw_session_id', this.sessionId);
+            this.renderAllMessages();
+            this.connect();
+            console.log('已创建新会话:', this.sessionId);
+        });
+    }
+
+    renderAllMessages() {
+        const messageEls = this.messagesWrapper.querySelectorAll('.message');
+        messageEls.forEach(el => el.remove());
+
+        if (this.messages.length > 0) {
+            if (this.welcomeMessage) {
+                this.welcomeMessage.style.display = 'none';
+            }
+            this.messages.forEach(msg => this.renderMessage(msg));
+        } else if (this.welcomeMessage) {
+            this.welcomeMessage.style.display = 'flex';
+        }
     }
     
     // 滚动到底部
@@ -1284,23 +1362,29 @@ class ZeroClawChat {
     // 从 localStorage 加载消息
     loadMessages() {
         try {
-            const saved = localStorage.getItem(`zeroclaw_messages_${this.sessionId}`);
+            const storageKey = `zeroclaw_messages_${this.sessionId}`;
+            console.log('📂 [加载] 从 localStorage 加载消息...', { storageKey });
+            const saved = localStorage.getItem(storageKey);
             if (saved) {
+                console.log('📂 [加载] 找到保存的消息');
                 this.messages = JSON.parse(saved).map(msg => ({
                     ...msg,
                     timestamp: new Date(msg.timestamp)
                 }));
-                
+                console.log('📂 [加载] 已加载消息数量:', this.messages.length);
+
                 // 重新渲染
                 if (this.messages.length > 0 && this.welcomeMessage) {
                     this.welcomeMessage.style.display = 'none';
                 }
-                
+
                 this.messages.forEach(msg => this.renderMessage(msg));
-                this.schedulePersistSessionRecord();
+                this.schedulePersistSessionRecord(true);
+            } else {
+                console.log('📂 [加载] 未找到保存的消息');
             }
         } catch (error) {
-            console.error('加载消息失败:', error);
+            console.error('❌ [加载] 加载消息失败:', error);
         }
     }
 
@@ -1323,12 +1407,25 @@ class ZeroClawChat {
     }
 
     async persistSessionRecord() {
-        if (!this.verifiedSessionId) return;
-        if (!this.sessionId) return;
-        if (!Array.isArray(this.messages)) return;
+        if (!this.verifiedSessionId) {
+            console.warn('⚠️ [持久化] 无法保存: verifiedSessionId 为空');
+            return;
+        }
+        if (!this.sessionId) {
+            console.warn('⚠️ [持久化] 无法保存: sessionId 为空');
+            return;
+        }
+        if (!Array.isArray(this.messages) || this.messages.length === 0) {
+            console.warn('⚠️ [持久化] 无法保存: messages 为空或非数组');
+            return;
+        }
 
         try {
-            await fetch('/api/sessions/save', {
+            console.log('💾 [持久化] 保存会话记录...', {
+                sessionId: this.sessionId,
+                messageCount: this.messages.length
+            });
+            const response = await fetch('/api/sessions/save', {
                 method: 'POST',
                 headers: this.getAuthHeaders(),
                 body: JSON.stringify({
@@ -1336,8 +1433,17 @@ class ZeroClawChat {
                     messages: this.messages
                 })
             });
+            const result = await response.json();
+            if (result.success) {
+                console.log('✅ [持久化] 会话记录已保存', {
+                    fileName: result.fileName,
+                    size: result.size
+                });
+            } else {
+                console.warn('⚠️ [持久化] 保存失败:', result.error);
+            }
         } catch (error) {
-            console.warn('保存会话记录失败:', error.message);
+            console.warn('❌ [持久化] 保存会话记录失败:', error.message);
         }
     }
 
@@ -1371,6 +1477,65 @@ class ZeroClawChat {
         } catch (error) {
             console.error('下载会话失败:', error);
             alert('下载会话失败，请稍后重试。');
+        }
+    }
+
+    async resumeSession(sessionId) {
+        if (!this.verifiedSessionId || !sessionId) return;
+
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
+            });
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.error || '读取会话失败');
+            }
+
+            this.sessionId = sessionId;
+            localStorage.setItem('zeroclaw_session_id', sessionId);
+
+            if (Array.isArray(result.messages) && result.messages.length > 0) {
+                this.messages = result.messages.map(msg => ({
+                    ...msg,
+                    timestamp: new Date(msg.timestamp)
+                }));
+            } else {
+                this.messages = [];
+            }
+            localStorage.setItem(`zeroclaw_messages_${sessionId}`, JSON.stringify(this.messages));
+            this.renderAllMessages();
+
+            if (this.historyModalInstance) {
+                this.historyModalInstance.hide();
+            }
+            this.connect();
+            console.log('已切换到会话:', sessionId);
+        } catch (error) {
+            console.error('切换会话失败:', error);
+            alert('切换会话失败，请稍后重试。');
+        }
+    }
+
+    async deleteSession(sessionId) {
+        if (!this.verifiedSessionId || !sessionId) return;
+
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+                method: 'DELETE',
+                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
+            });
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.error || '删除失败');
+            }
+
+            localStorage.removeItem(`zeroclaw_messages_${sessionId}`);
+            await this.refreshHistorySessions();
+            console.log('已删除会话:', sessionId);
+        } catch (error) {
+            console.error('删除会话失败:', error);
+            alert('删除会话失败，请稍后重试。');
         }
     }
 

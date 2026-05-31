@@ -25,10 +25,15 @@ npm run dev
 ## 环境变量（`.env`）
 
 ```env
+# AI 后端选择: zeroclaw | picoclaw
+AI_BACKEND=zeroclaw
+
 ZEROCLOW_GATEWAY_URL=http://localhost:42617
+PICOCLAW_GATEWAY_URL=http://localhost:18790
 PORT=3332
 ACCESS_KEY=replace-with-strong-key
 ZEROCLOW_TOKEN=your-token             # 可选
+PICOCLAW_TOKEN=your-token             # 可选
 SESSION_TTL_MS=43200000               # 可选，默认 12 小时
 ALLOWED_ORIGINS=http://localhost:3332 # 可选，逗号分隔
 VERIFY_MAX_ATTEMPTS=10                # 可选
@@ -39,10 +44,13 @@ VERIFY_BLOCK_MS=900000                # 可选（15 分钟）
 ## 核心功能
 
 - 访问密钥验证与服务端会话鉴权
+- **多后端支持**：通过 `AI_BACKEND` 环境变量切换 ZeroClaw 和 PicoClaw
 - WebSocket 流式聊天（`/ws/chat` 代理到 Gateway）
+- **图片上传**：发送图片给 PicoClaw 进行视觉识别（仅 PicoClaw 模式）
 - Markdown 渲染、深浅色主题
-- 会话记录自动保存为 `chat_records/<sessionId>.md`
-- 会话记录弹窗支持查看、刷新、下载（下载入口已合并到“会话记录”）
+- 会话记录自动保存为 `chat_records/<sessionId>.md` + `.json`
+- **会话管理**：新建会话、继续历史会话、删除会话
+- 会话记录弹窗支持查看、刷新、下载
 - 下载内容仅保留对话正文（用户/助手），过滤工具调用和调试信息
 - 聊天区宽度随页面自适应，字体与间距优化以提升同屏信息密度
 - 页面非活动导致断线时，前端会自动守护并重连
