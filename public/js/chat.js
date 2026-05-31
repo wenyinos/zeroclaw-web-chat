@@ -91,14 +91,16 @@ class ZeroClawChat {
             this.gatewayUrl = config.gatewayUrl || 'http://localhost:42617';
             this.token = config.token || '';
             this.backend = config.backend || 'zeroclaw';
+            this.imageUploadEnabled = config.imageUploadEnabled !== false;
 
             console.log('⚙️ [配置] 已加载服务器配置');
             console.log('   - Backend:', this.backend);
             console.log('   - Gateway URL:', this.gatewayUrl);
             console.log('   - Token:', this.token ? '已配置' : '未配置');
+            console.log('   - 图片上传:', this.imageUploadEnabled ? '已启用' : '已禁用');
 
-            // picoclaw 模式下显示图片上传按钮
-            if (this.backend === 'picoclaw') {
+            // picoclaw 模式且启用图片上传时显示按钮
+            if (this.backend === 'picoclaw' && this.imageUploadEnabled) {
                 const btn = document.getElementById('imageUploadBtn');
                 if (btn) btn.style.display = '';
             }

@@ -74,6 +74,7 @@ const AI_BACKEND = (process.env.AI_BACKEND || 'zeroclaw').toLowerCase();
 const USE_PICOCLAW = AI_BACKEND === 'picoclaw';
 const PICOCLAW_URL = process.env.PICOCLAW_GATEWAY_URL || 'http://localhost:18790';
 const PICOCLAW_TOKEN = process.env.PICOCLAW_TOKEN || '';
+const IMAGE_UPLOAD_ENABLED = process.env.IMAGE_UPLOAD_ENABLED !== 'false';
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -302,7 +303,8 @@ app.get('/api/config', (req, res) => {
     gatewayUrl: activeUrl,
     token: activeToken || null,
     hasServerToken: Boolean(activeToken),
-    backend: USE_PICOCLAW ? 'picoclaw' : 'zeroclaw'
+    backend: USE_PICOCLAW ? 'picoclaw' : 'zeroclaw',
+    imageUploadEnabled: IMAGE_UPLOAD_ENABLED
   });
 });
 
