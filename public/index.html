@@ -97,6 +97,9 @@
 
                 <!-- 搜索栏（默认隐藏） -->
                 <div class="search-bar" id="searchBar" style="display: none;">
+                    <button class="btn-icon search-filter" id="favoriteFilterBtn" title="只看收藏">
+                        ⭐
+                    </button>
                     <input type="text" class="search-input" id="searchInput" placeholder="搜索消息...">
                     <span class="search-count" id="searchCount"></span>
                     <button class="btn-icon search-close" id="searchClose">✕</button>
@@ -208,6 +211,16 @@
                     <div class="assistant-list">
                         <!-- 动态填充 -->
                     </div>
+                </div>
+
+                <!-- 群聊搜索栏（默认隐藏） -->
+                <div class="search-bar" id="groupSearchBar" style="display: none;">
+                    <button class="btn-icon search-filter" id="groupFavoriteFilterBtn" title="只看收藏">
+                        ⭐
+                    </button>
+                    <input type="text" class="search-input" id="groupSearchInput" placeholder="搜索群聊消息...">
+                    <span class="search-count" id="groupSearchCount"></span>
+                    <button class="btn-icon search-close" id="groupSearchClose">✕</button>
                 </div>
 
                 <!-- 消息列表 -->
@@ -370,6 +383,11 @@
                                 <input type="checkbox" id="notificationsToggle">
                                 <span class="toggle-slider"></span>
                             </label>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <div class="settings-actions">
+                            <button class="btn-primary" id="saveSettingsBtn">保存设置</button>
                         </div>
                     </div>
                     <div class="settings-section">

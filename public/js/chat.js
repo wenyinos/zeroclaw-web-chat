@@ -42,6 +42,14 @@ class ClawAgent {
     // 贴纸状态
     this.stickersLoaded = false;
 
+    // 当前设置
+    this.currentSettings = null;
+
+    // 搜索/筛选状态
+    this.showFavoritesOnly = false;
+    this.showGroupFavoritesOnly = false;
+    this.searchMode = 'chat'; // 'chat' 或 'group'
+
     // 图片上传
     this.pendingImages = [];
     this.imagePreviewContainer = null;
@@ -118,6 +126,7 @@ class ClawAgent {
       searchInput: document.getElementById('searchInput'),
       searchCount: document.getElementById('searchCount'),
       searchClose: document.getElementById('searchClose'),
+      favoriteFilterBtn: document.getElementById('favoriteFilterBtn'),
       imageUploadBtn: document.getElementById('imageUploadBtn'),
       imageUploadInput: document.getElementById('imageUploadInput'),
       draftsArea: document.getElementById('draftsArea'),
@@ -139,6 +148,11 @@ class ClawAgent {
       groupMessageInput: document.getElementById('groupMessageInput'),
       groupSendBtn: document.getElementById('groupSendBtn'),
       groupSearchBtn: document.getElementById('groupSearchBtn'),
+      groupSearchBar: document.getElementById('groupSearchBar'),
+      groupSearchInput: document.getElementById('groupSearchInput'),
+      groupSearchCount: document.getElementById('groupSearchCount'),
+      groupSearchClose: document.getElementById('groupSearchClose'),
+      groupFavoriteFilterBtn: document.getElementById('groupFavoriteFilterBtn'),
       groupClearBtn: document.getElementById('groupClearBtn'),
       assistantSelector: document.getElementById('assistantSelector'),
       assistantSettingsBtn: document.getElementById('assistantSettingsBtn'),
@@ -157,6 +171,7 @@ class ClawAgent {
       assistantNameInput: document.getElementById('assistantNameInput'),
       themeSelect: document.getElementById('themeSelect'),
       notificationsToggle: document.getElementById('notificationsToggle'),
+      saveSettingsBtn: document.getElementById('saveSettingsBtn'),
 
       // 文档
       documentList: document.getElementById('documentList'),
@@ -249,12 +264,21 @@ class ClawAgent {
         this.elements.themeSelect.value = settings.theme || 'light';
         this.elements.notificationsToggle.checked = settings.notifications || false;
 
+        // 保存当前设置
+        this.currentSettings = settings;
+
         // 应用主题
         this.setTheme(settings.theme || 'light');
 
         // 更新用户头像
         const initial = (settings.userName || 'W')[0].toUpperCase();
         document.querySelector('.user-avatar').textContent = initial;
+
+        // 更新用户名显示
+        const userNameEl = document.querySelector('.user-name');
+        if (userNameEl) {
+          userNameEl.textContent = settings.userName || 'Wenyin';
+        }
       }
     } catch (error) {
       console.error('加载设置失败:', error);
@@ -286,6 +310,18 @@ class ClawAgent {
         // 更新用户头像
         const initial = (settings.userName || 'W')[0].toUpperCase();
         document.querySelector('.user-avatar').textContent = initial;
+
+        // 更新用户名显示
+        const userNameEl = document.querySelector('.user-name');
+        if (userNameEl) {
+          userNameEl.textContent = settings.userName || 'Wenyin';
+        }
+
+        // 保存当前设置到实例变量
+        this.currentSettings = settings;
+
+        // 应用主题
+        this.setTheme(settings.theme);
       }
     } catch (error) {
       console.error('保存设置失败:', error);
@@ -895,8 +931,12 @@ class ClawAgent {
       welcome.style.display = 'none';
     }
 
-    // 渲染所有消息
-    this.messages.forEach(msg => this.renderMessage(msg));
+    // 渲染消息（支持收藏筛选）
+    const messagesToShow = this.showFavoritesOnly
+      ? this.messages.filter(m => m.favorite)
+      : this.messages;
+
+    messagesToShow.forEach(msg => this.renderMessage(msg));
     this.scrollToBottom();
   }
 
@@ -914,8 +954,8 @@ class ClawAgent {
       minute: '2-digit'
     });
 
-    const initial = isMe ? 'W' : 'C';
-    const senderName = isMe ? '你' : 'Claw Agent';
+    const initial = isMe ? (this.currentSettings?.userName || 'W')[0].toUpperCase() : 'C';
+    const senderName = isMe ? (this.currentSettings?.userName || '你') : (this.currentSettings?.assistantName || 'Claw Agent');
 
     let html = `
       <div class="message-row ${isMe ? 'me' : ''}" data-message-id="${message.id}">
@@ -1248,7 +1288,7 @@ class ClawAgent {
     if (!message) return;
 
     try {
-      const response = await fetch(`/api/messages/${messageId}/favorite`, {
+      const response = await fetch(`/api/chat/messages/${messageId}/favorite`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1551,29 +1591,74 @@ class ClawAgent {
   }
 
   // ===== 搜索 =====
-  toggleSearch() {
+  toggleSearch(mode = 'chat') {
     const { searchBar, searchInput } = this.elements;
     const isVisible = searchBar.style.display !== 'none';
+
+    // 切换搜索模式
+    this.searchMode = mode;
 
     searchBar.style.display = isVisible ? 'none' : 'flex';
 
     if (!isVisible) {
       searchInput.focus();
+      searchInput.placeholder = mode === 'group' ? '搜索群聊消息...' : '搜索消息...';
     } else {
       searchInput.value = '';
+      this.showFavoritesOnly = false;
+      this.elements.favoriteFilterBtn.classList.remove('active');
       this.clearSearchHighlights();
+      // 重新渲染原始列表
+      if (this.searchMode === 'group') {
+        this.renderGroupMessages();
+      } else {
+        this.renderMessages();
+      }
     }
+  }
+
+  toggleFavoritesFilter() {
+    this.showFavoritesOnly = !this.showFavoritesOnly;
+    this.elements.favoriteFilterBtn.classList.toggle('active', this.showFavoritesOnly);
+
+    // 应用筛选
+    if (this.searchMode === 'group') {
+      this.renderGroupMessages();
+    } else {
+      this.renderMessages();
+    }
+
+    // 更新计数
+    const filtered = this.getFilteredMessages();
+    this.elements.searchCount.textContent = this.showFavoritesOnly
+      ? `${filtered.length} 条收藏`
+      : '';
+  }
+
+  getFilteredMessages() {
+    const messages = this.searchMode === 'group' ? this.groupMessages : this.messages;
+    if (this.showFavoritesOnly) {
+      return messages.filter(m => m.favorite);
+    }
+    return messages;
   }
 
   searchMessages(keyword) {
     if (!keyword) {
       this.elements.searchCount.textContent = '';
       this.clearSearchHighlights();
+      // 重新渲染
+      if (this.searchMode === 'group') {
+        this.renderGroupMessages();
+      } else {
+        this.renderMessages();
+      }
       return;
     }
 
-    const results = this.messages.filter(m =>
-      m.content.toLowerCase().includes(keyword.toLowerCase())
+    const messages = this.getFilteredMessages();
+    const results = messages.filter(m =>
+      m.content && m.content.toLowerCase().includes(keyword.toLowerCase())
     );
 
     this.elements.searchCount.textContent = `${results.length} 条结果`;
@@ -2246,7 +2331,7 @@ class ClawAgent {
         },
         body: JSON.stringify({
           content,
-          sender: '用户',
+          sender: this.currentSettings?.userName || '用户',
           images
         })
       });
@@ -2492,8 +2577,90 @@ class ClawAgent {
     container.innerHTML = '';
     if (welcome) container.appendChild(welcome);
 
-    // 渲染消息
-    this.groupMessages.forEach(msg => this.renderGroupMessage(msg));
+    // 渲染消息（支持收藏筛选）
+    const messagesToShow = this.showFavoritesOnly
+      ? this.groupMessages.filter(m => m.favorite)
+      : this.groupMessages;
+
+    messagesToShow.forEach(msg => this.renderGroupMessage(msg));
+  }
+
+  toggleGroupSearch() {
+    const { groupSearchBar, groupSearchInput } = this.elements;
+    const isVisible = groupSearchBar.style.display !== 'none';
+
+    groupSearchBar.style.display = isVisible ? 'none' : 'flex';
+
+    if (!isVisible) {
+      groupSearchInput.focus();
+    } else {
+      groupSearchInput.value = '';
+      this.showGroupFavoritesOnly = false;
+      this.elements.groupFavoriteFilterBtn.classList.remove('active');
+      this.elements.groupSearchCount.textContent = '';
+      this.renderGroupMessages();
+    }
+  }
+
+  toggleGroupFavoritesFilter() {
+    this.showGroupFavoritesOnly = !this.showGroupFavoritesOnly;
+    this.elements.groupFavoriteFilterBtn.classList.toggle('active', this.showGroupFavoritesOnly);
+    this.renderGroupMessages();
+
+    const filtered = this.showGroupFavoritesOnly
+      ? this.groupMessages.filter(m => m.favorite)
+      : this.groupMessages;
+    this.elements.groupSearchCount.textContent = this.showGroupFavoritesOnly
+      ? `${filtered.length} 条收藏`
+      : '';
+  }
+
+  searchGroupMessages(keyword) {
+    if (!keyword) {
+      this.elements.groupSearchCount.textContent = '';
+      this.renderGroupMessages();
+      return;
+    }
+
+    const messages = this.showGroupFavoritesOnly
+      ? this.groupMessages.filter(m => m.favorite)
+      : this.groupMessages;
+
+    const results = messages.filter(m =>
+      m.content && m.content.toLowerCase().includes(keyword.toLowerCase())
+    );
+
+    this.elements.groupSearchCount.textContent = `${results.length} 条结果`;
+
+    // 渲染搜索结果
+    const container = document.querySelector('#tab-group .messages-wrapper');
+    if (!container) return;
+
+    const welcome = container.querySelector('.welcome-message');
+    container.innerHTML = '';
+    if (welcome) container.appendChild(welcome);
+
+    results.forEach(msg => this.renderGroupMessage(msg));
+  }
+
+  async clearGroupMessages() {
+    if (!confirm('确定要清空群聊消息吗？')) return;
+
+    try {
+      const response = await fetch('/api/group/messages', {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.groupMessages = [];
+        this.renderGroupMessages();
+        this.showToast('success', '已清空', '群聊消息已清空');
+      }
+    } catch (error) {
+      console.error('清空群聊失败:', error);
+    }
   }
 
   copyGroupMessage(messageId) {
@@ -2790,11 +2957,33 @@ class ClawAgent {
     });
 
     // 搜索
-    elements.searchBtn.addEventListener('click', () => this.toggleSearch());
+    elements.searchBtn.addEventListener('click', () => this.toggleSearch('chat'));
     elements.searchClose.addEventListener('click', () => this.toggleSearch());
+    if (elements.favoriteFilterBtn) {
+      elements.favoriteFilterBtn.addEventListener('click', () => this.toggleFavoritesFilter());
+    }
     elements.searchInput.addEventListener('input', (e) => {
       this.searchMessages(e.target.value);
     });
+
+    // 群聊搜索和清空
+    if (elements.groupSearchBtn) {
+      elements.groupSearchBtn.addEventListener('click', () => this.toggleGroupSearch());
+    }
+    if (elements.groupSearchClose) {
+      elements.groupSearchClose.addEventListener('click', () => this.toggleGroupSearch());
+    }
+    if (elements.groupFavoriteFilterBtn) {
+      elements.groupFavoriteFilterBtn.addEventListener('click', () => this.toggleGroupFavoritesFilter());
+    }
+    if (elements.groupSearchInput) {
+      elements.groupSearchInput.addEventListener('input', (e) => {
+        this.searchGroupMessages(e.target.value);
+      });
+    }
+    if (elements.groupClearBtn) {
+      elements.groupClearBtn.addEventListener('click', () => this.clearGroupMessages());
+    }
 
     // 图片上传
     elements.imageUploadBtn.addEventListener('click', () => {
@@ -2855,11 +3044,8 @@ class ClawAgent {
     });
 
     // 设置
-    elements.userNameInput.addEventListener('change', () => this.saveSettings());
-    elements.assistantNameInput.addEventListener('change', () => this.saveSettings());
     elements.themeSelect.addEventListener('change', (e) => {
       this.setTheme(e.target.value);
-      this.saveSettings();
     });
     elements.notificationsToggle.addEventListener('change', async (e) => {
       if (e.target.checked) {
@@ -2870,8 +3056,13 @@ class ClawAgent {
           return;
         }
       }
-      this.saveSettings();
     });
+    if (elements.saveSettingsBtn) {
+      elements.saveSettingsBtn.addEventListener('click', () => {
+        this.saveSettings();
+        this.showToast('success', '已保存', '设置已保存成功');
+      });
+    }
 
     // 灯箱
     elements.lightboxClose.addEventListener('click', () => this.closeLightbox());

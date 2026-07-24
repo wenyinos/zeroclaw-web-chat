@@ -1925,3 +1925,41 @@ button:active:not(:disabled) {
   font-size: 1.8rem;
   line-height: 1;
 }
+
+/* ===== 设置操作按钮 ===== */
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: .5rem;
+}
+
+.settings-actions .btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  padding: .5rem 1.5rem;
+}
+
+.settings-actions .btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* ===== 搜索筛选按钮 ===== */
+.search-filter {
+  flex-shrink: 0;
+  font-size: 1rem;
+  padding: .3rem;
+  border-radius: var(--radius);
+  transition: all .15s;
+}
+
+.search-filter:hover {
+  background: var(--panel-soft);
+}
+
+.search-filter.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
