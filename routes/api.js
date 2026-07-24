@@ -19,7 +19,7 @@ import {
 } from '../lib/utils.js';
 import {
   initDatabase,
-  db,
+  getDb,
   addChatMessage,
   getChatMessages,
   deleteChatMessage,
@@ -52,8 +52,14 @@ import {
 
 const router = express.Router();
 
-// 初始化数据库
-initDatabase();
+// 初始化数据库（异步）
+let dbReady = false;
+initDatabase().then(() => {
+  dbReady = true;
+  log('info', '数据库初始化完成');
+}).catch(err => {
+  log('error', `数据库初始化失败: ${err.message}`);
+});
 
 // 配置（延迟读取，确保 dotenv 已加载）
 function getConfig() {
@@ -396,8 +402,8 @@ router.put('/api/group/messages/:id', requireVerifiedSession, (req, res) => {
   const { content, thinking } = req.body;
 
   // 更新数据库中的消息
-  const stmt = db.prepare('UPDATE group_messages SET content = ?, thinking = ? WHERE id = ?');
-  stmt.run(content, thinking || '', id);
+  const db = getDb();
+  db.run('UPDATE group_messages SET content = ?, thinking = ? WHERE id = ?', [content, thinking || '', id]);
 
   log('info', `群聊消息已更新: ${id}`);
   return res.json({ success: true, id });
