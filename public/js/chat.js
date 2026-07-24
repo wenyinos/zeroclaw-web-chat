@@ -1,1634 +1,2916 @@
-// ZeroClaw Web Chat - 主要聊天逻辑
+// ZeroClaw Web Chat - 主应用逻辑
+// 基于 companion-app 设计重构
 
-class ZeroClawChat {
-    constructor() {
-        // 配置（优先从服务器 API 获取，其次 localStorage，最后默认值）
-        this.gatewayUrl = null;  // 将从 /api/config 加载
-        this.token = null;       // 将从 /api/config 加载
-        this.backend = 'zeroclaw'; // 后端类型
-        this.sessionId = this.getOrCreateSessionId();
-        this.verifiedSessionId = sessionStorage.getItem('zeroclaw_verified_session') || null;
-        this.accessKey = null;
+class ClawAgent {
+  constructor() {
+    // 配置
+    this.gatewayUrl = null;
+    this.token = null;
+    this.backend = 'zeroclaw';
+    this.sessionId = this.getOrCreateSessionId();
+    this.verifiedSessionId = sessionStorage.getItem('claw_verified_session') || null;
+    this.accessKey = null;
 
-        // 图片上传（仅 picoclaw 支持）
-        this.pendingImages = [];
+    // WebSocket
+    this.ws = null;
+    this.isConnected = false;
+    this.manualDisconnect = false;
+    this.reconnectTimer = null;
+    this.reconnectDelay = 1000;
+    this.maxReconnectDelay = 30000;
 
-        // WebSocket 连接
-        this.ws = null;
-        this.isConnected = false;
-        this.isTyping = false;
-        this.manualDisconnect = false;
-        this.reconnectTimer = null;
-        this.connectionWatchdogTimer = null;
-        this.connectTimeoutTimer = null;
-        this.pageHiddenAt = 0;
-        this.lastWsMessageAt = 0;
+    // 消息状态
+    this.messages = [];
+    this.pendingContent = '';
+    this.pendingThinking = '';
+    this.streamingContent = '';
+    this.streamingThinking = '';
+    this.drafts = this.loadDrafts();
 
-        // 消息状态
-        this.messages = [];
-        this.pendingContent = '';
-        this.pendingThinking = '';
-        this.capturedThinking = '';
-        this.streamingContent = '';
-        this.streamingThinking = '';
-        this.authEventsBound = false;
-        this.chatEventsBound = false;
-        this.persistTimer = null;
-        this.historyCache = [];
+    // 当前标签页
+    this.currentTab = 'chat';
 
-        // DOM 元素
-        this.authContainer = document.getElementById('authContainer');
-        this.chatContainer = document.getElementById('chatContainer');
-        this.authForm = document.getElementById('authForm');
-        this.accessKeyInput = document.getElementById('accessKeyInput');
-        this.authError = document.getElementById('authError');
-        this.authSubmitBtn = document.getElementById('authSubmitBtn');
-        this.messagesWrapper = document.getElementById('messagesWrapper');
-        this.messageInput = document.getElementById('messageInput');
-        this.sendBtn = document.getElementById('sendBtn');
-        this.statusDot = document.getElementById('statusDot');
-        this.statusText = document.getElementById('statusText');
-        this.welcomeMessage = document.getElementById('welcomeMessage');
-        this.newChatBtn = document.getElementById('newChatBtn');
-        this.themeToggleBtn = document.getElementById('themeToggleBtn');
-        this.historyBtn = document.getElementById('historyBtn');
-        this.historySessionSelect = document.getElementById('historySessionSelect');
-        this.historyPreview = document.getElementById('historyPreview');
-        this.historyMeta = document.getElementById('historyMeta');
-        this.refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
-        this.historyDownloadBtn = document.getElementById('historyDownloadBtn');
-        this.historyResumeBtn = document.getElementById('historyResumeBtn');
-        this.historyDeleteBtn = document.getElementById('historyDeleteBtn');
-        this.historyModal = document.getElementById('historyModal');
-        this.historyModalInstance = this.historyModal ? new bootstrap.Modal(this.historyModal) : null;
+    // 消息上下文：用于区分私聊/群聊回复
+    this.messageContext = 'chat'; // 'chat' 或 'group'
+    this.pendingGroupReplies = new Map(); // 等待回复的群聊助手 Map<thinkingMsgId, assistant>
 
-        // 初始化
-        this.init();
-    }
+    // 助手配置
+    this.assistants = [];
+    this.currentAssistant = null;
+    this.groupMessages = [];
 
-    init() {
-        // 先加载服务器配置
-        this.loadServerConfig().then(() => {
-            // 检查是否已有访问密钥（优先 localStorage，其次 sessionStorage）
-            const savedKey = localStorage.getItem('access_key') || sessionStorage.getItem('access_key');
-            if (savedKey) {
-                this.verifyAccessKey(savedKey, Boolean(localStorage.getItem('access_key')));
-            } else {
-                this.showAuth();
-            }
-        });
+    // 贴纸状态
+    this.stickersLoaded = false;
 
-        // 初始化主题
-        this.initTheme();
-    }
+    // 图片上传
+    this.pendingImages = [];
+    this.imagePreviewContainer = null;
+    this.imagePreviewList = null;
+    this.imageUploadEnabled = false; // 默认禁用，等待服务器配置
 
-    // 从服务器加载配置
-    async loadServerConfig() {
-        try {
-            const response = await fetch('/api/config');
-            const config = await response.json();
+    // DOM 元素
+    this.elements = {};
 
-            this.gatewayUrl = config.gatewayUrl || 'http://localhost:42617';
-            this.token = config.token || '';
-            this.backend = config.backend || 'zeroclaw';
-            this.imageUploadEnabled = config.imageUploadEnabled !== false;
+    // 初始化
+    this.init();
+  }
 
-            console.log('⚙️ [配置] 已加载服务器配置');
-            console.log('   - Backend:', this.backend);
-            console.log('   - Gateway URL:', this.gatewayUrl);
-            console.log('   - Token:', this.token ? '已配置' : '未配置');
-            console.log('   - 图片上传:', this.imageUploadEnabled ? '已启用' : '已禁用');
+  // ===== 初始化 =====
+  async init() {
+    // 缓存 DOM 元素
+    this.cacheElements();
 
-            // picoclaw 模式且启用图片上传时显示按钮
-            if (this.backend === 'picoclaw' && this.imageUploadEnabled) {
-                const btn = document.getElementById('imageUploadBtn');
-                if (btn) btn.style.display = '';
-            }
-        } catch (error) {
-            console.warn('⚠️ [配置] 无法加载服务器配置，使用默认值');
-            this.gatewayUrl = 'http://localhost:42617';
-            this.token = '';
-        }
-    }
-    
+    // 加载服务器配置
+    await this.loadServerConfig();
+
     // 初始化主题
-    initTheme() {
-        // 从 localStorage 加载主题，如果没有则使用日间主题
-        const savedTheme = localStorage.getItem('theme') || 'light';
-        this.setTheme(savedTheme);
+    this.initTheme();
+
+    // 绑定事件
+    this.bindEvents();
+
+    // 设置离线检测
+    this.setupOfflineDetection();
+
+    // 检查认证状态
+    this.checkAuth();
+  }
+
+  cacheElements() {
+    this.elements = {
+      // 认证
+      authOverlay: document.getElementById('authOverlay'),
+      authForm: document.getElementById('authForm'),
+      accessKeyInput: document.getElementById('accessKeyInput'),
+      authError: document.getElementById('authError'),
+      authSubmitBtn: document.getElementById('authSubmitBtn'),
+      rememberKey: document.getElementById('rememberKey'),
+
+      // 主应用
+      appMain: document.getElementById('appMain'),
+      loadingScreen: document.getElementById('loadingScreen'),
+
+      // 侧边栏
+      sidebar: document.getElementById('sidebar'),
+      navBtns: document.querySelectorAll('.nav-btn'),
+      logoutBtn: document.getElementById('logoutBtn'),
+
+      // 移动端标签
+      mobileTabs: document.getElementById('mobileTabs'),
+      mobileTabBtns: document.querySelectorAll('.mobile-tab'),
+
+      // 标签面板
+      tabPanels: document.querySelectorAll('.tab-panel'),
+
+      // 私聊
+      statusDot: document.getElementById('statusDot'),
+      statusText: document.getElementById('statusText'),
+      messagesContainer: document.getElementById('messagesContainer'),
+      messagesWrapper: document.getElementById('messagesWrapper'),
+      welcomeMessage: document.getElementById('welcomeMessage'),
+      messageInput: document.getElementById('messageInput'),
+      sendBtn: document.getElementById('sendBtn'),
+      newChatBtn: document.getElementById('newChatBtn'),
+      historyBtn: document.getElementById('historyBtn'),
+      themeToggleBtn: document.getElementById('themeToggleBtn'),
+      searchBtn: document.getElementById('searchBtn'),
+      searchBar: document.getElementById('searchBar'),
+      searchInput: document.getElementById('searchInput'),
+      searchCount: document.getElementById('searchCount'),
+      searchClose: document.getElementById('searchClose'),
+      imageUploadBtn: document.getElementById('imageUploadBtn'),
+      imageUploadInput: document.getElementById('imageUploadInput'),
+      draftsArea: document.getElementById('draftsArea'),
+
+      // 贴纸
+      stickerToggleBtn: document.getElementById('stickerToggleBtn'),
+      stickerPanel: document.getElementById('stickerPanel'),
+      stickerGrid: document.getElementById('stickerGrid'),
+      stickerUploadBtn: document.getElementById('stickerUploadBtn'),
+      stickerUploadInput: document.getElementById('stickerUploadInput'),
+
+      // 控制台
+      consoleEvents: document.getElementById('consoleEvents'),
+      consoleInput: document.getElementById('consoleInput'),
+      consoleSendBtn: document.getElementById('consoleSendBtn'),
+
+      // 群聊
+      groupMessagesContainer: document.getElementById('groupMessagesContainer'),
+      groupMessageInput: document.getElementById('groupMessageInput'),
+      groupSendBtn: document.getElementById('groupSendBtn'),
+      groupSearchBtn: document.getElementById('groupSearchBtn'),
+      groupClearBtn: document.getElementById('groupClearBtn'),
+      assistantSelector: document.getElementById('assistantSelector'),
+      assistantSettingsBtn: document.getElementById('assistantSettingsBtn'),
+      assistantSettingsModal: document.getElementById('assistantSettingsModal'),
+      assistantSettingsClose: document.getElementById('assistantSettingsClose'),
+      assistantSettingsList: document.getElementById('assistantSettingsList'),
+      addAssistantBtn: document.getElementById('addAssistantBtn'),
+
+      // 记忆
+      memoryList: document.getElementById('memoryList'),
+      memorySearchInput: document.getElementById('memorySearchInput'),
+      addMemoryBtn: document.getElementById('addMemoryBtn'),
+
+      // 设置
+      userNameInput: document.getElementById('userNameInput'),
+      assistantNameInput: document.getElementById('assistantNameInput'),
+      themeSelect: document.getElementById('themeSelect'),
+      notificationsToggle: document.getElementById('notificationsToggle'),
+
+      // 文档
+      documentList: document.getElementById('documentList'),
+      addDocumentBtn: document.getElementById('addDocumentBtn'),
+
+      // 模态框
+      historyModal: document.getElementById('historyModal'),
+      historyModalClose: document.getElementById('historyModalClose'),
+      historySessionSelect: document.getElementById('historySessionSelect'),
+      refreshHistoryBtn: document.getElementById('refreshHistoryBtn'),
+      historyDownloadBtn: document.getElementById('historyDownloadBtn'),
+      historyResumeBtn: document.getElementById('historyResumeBtn'),
+      historyDeleteBtn: document.getElementById('historyDeleteBtn'),
+      historyMeta: document.getElementById('historyMeta'),
+      historyPreview: document.getElementById('historyPreview'),
+
+      // 灯箱
+      lightbox: document.getElementById('lightbox'),
+      lightboxClose: document.getElementById('lightboxClose'),
+      lightboxImage: document.getElementById('lightboxImage'),
+      lightboxFilename: document.getElementById('lightboxFilename'),
+      lightboxOriginal: document.getElementById('lightboxOriginal'),
+    };
+  }
+
+  // ===== 配置 =====
+  async loadServerConfig() {
+    try {
+      const response = await fetch('/api/config');
+      const config = await response.json();
+
+      this.gatewayUrl = config.gatewayUrl;
+      this.token = config.token || '';
+      this.backend = config.backend || 'zeroclaw';
+      this.imageUploadEnabled = config.imageUploadEnabled !== false;
+      this.memoryEnabled = config.memoryEnabled === true;
+
+      console.log('⚙️ 配置已加载:', this.backend, 'imageUpload:', this.imageUploadEnabled, 'memory:', this.memoryEnabled);
+
+      // 根据配置显示/隐藏功能入口
+      this.updateFeatureVisibility();
+    } catch (error) {
+      console.error('❌ 加载配置失败:', error);
+      // 使用默认配置
+      this.imageUploadEnabled = true;
+      this.memoryEnabled = false;
+    }
+  }
+
+  updateFeatureVisibility() {
+    // 图片上传按钮
+    if (this.imageUploadEnabled) {
+      this.elements.imageUploadBtn.style.display = 'block';
+    } else {
+      this.elements.imageUploadBtn.style.display = 'none';
     }
 
-    // 设置主题
-    setTheme(theme) {
-        if (theme === 'dark') {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            // 更新按钮图标为太阳
-            if (this.themeToggleBtn) {
-                const icon = this.themeToggleBtn.querySelector('i');
-                if (icon) {
-                    icon.className = 'bi bi-sun-fill';
-                }
-            }
+    // 记忆标签页
+    const memoryTabBtns = document.querySelectorAll('[data-tab="memory"]');
+    memoryTabBtns.forEach(btn => {
+      btn.style.display = this.memoryEnabled ? '' : 'none';
+    });
+
+    // 如果当前是记忆标签页但功能禁用，切换到私聊
+    if (!this.memoryEnabled && this.currentTab === 'memory') {
+      this.switchTab('chat');
+    }
+  }
+
+  // ===== 设置 =====
+  async loadSettings() {
+    try {
+      const response = await fetch('/api/settings', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      // 检查 401错误
+      if (response.status === 401) {
+        console.warn('Session 已过期，重新登录');
+        this.logout();
+        return;
+      }
+
+      const data = await response.json();
+
+      if (data.success) {
+        const { settings } = data;
+        this.elements.userNameInput.value = settings.userName || 'Wenyin';
+        this.elements.assistantNameInput.value = settings.assistantName || 'Claw Agent';
+        this.elements.themeSelect.value = settings.theme || 'light';
+        this.elements.notificationsToggle.checked = settings.notifications || false;
+
+        // 应用主题
+        this.setTheme(settings.theme || 'light');
+
+        // 更新用户头像
+        const initial = (settings.userName || 'W')[0].toUpperCase();
+        document.querySelector('.user-avatar').textContent = initial;
+      }
+    } catch (error) {
+      console.error('加载设置失败:', error);
+    }
+  }
+
+  async saveSettings() {
+    const settings = {
+      userName: this.elements.userNameInput.value.trim() || 'Wenyin',
+      assistantName: this.elements.assistantNameInput.value.trim() || 'Claw Agent',
+      theme: this.elements.themeSelect.value,
+      notifications: this.elements.notificationsToggle.checked
+    };
+
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify(settings)
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        console.log('✅ 设置已保存');
+
+        // 更新用户头像
+        const initial = (settings.userName || 'W')[0].toUpperCase();
+        document.querySelector('.user-avatar').textContent = initial;
+      }
+    } catch (error) {
+      console.error('保存设置失败:', error);
+    }
+  }
+
+  // ===== 认证 =====
+  checkAuth() {
+    const savedKey = localStorage.getItem('access_key') || sessionStorage.getItem('access_key');
+    if (savedKey) {
+      // 总是重新验证，因为服务器重启后 session 会失效
+      this.verifyAccessKey(savedKey, Boolean(localStorage.getItem('access_key')));
+    } else {
+      this.showAuth();
+    }
+  }
+
+  showAuth() {
+    this.elements.authOverlay.style.display = 'flex';
+    this.elements.appMain.style.display = 'none';
+    this.elements.loadingScreen.style.display = 'none';
+    this.elements.accessKeyInput.focus();
+  }
+
+  showApp() {
+    this.elements.authOverlay.style.display = 'none';
+    this.elements.loadingScreen.style.display = 'none';
+    this.elements.appMain.style.display = 'grid';
+
+    // 加载设置和助手配置
+    this.loadSettings();
+    this.loadAssistants();
+
+    // 加载历史消息
+    this.loadChatHistory();
+
+    // 连接 SSE
+    this.connectSSE();
+  }
+
+  async loadChatHistory() {
+    try {
+      // 加载私聊历史消息（使用 sessionId）
+      const chatResponse = await fetch(`/api/chat/messages?limit=80&session_id=${this.sessionId}`, {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const chatData = await chatResponse.json();
+
+      if (chatData.success && chatData.messages.length > 0) {
+        this.messages = chatData.messages;
+        this.renderMessages();
+      }
+    } catch (error) {
+      console.error('加载私聊历史失败:', error);
+    }
+  }
+
+  async verifyAccessKey(key, remember = false) {
+    try {
+      this.elements.authSubmitBtn.disabled = true;
+      this.elements.authSubmitBtn.textContent = '验证中...';
+
+      const response = await fetch('/api/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.accessKey = key;
+        this.verifiedSessionId = data.sessionId;
+        sessionStorage.setItem('claw_verified_session', data.sessionId);
+
+        if (remember) {
+          localStorage.setItem('access_key', key);
         } else {
-            document.documentElement.removeAttribute('data-theme');
-            // 更新按钮图标为月亮
-            if (this.themeToggleBtn) {
-                const icon = this.themeToggleBtn.querySelector('i');
-                if (icon) {
-                    icon.className = 'bi bi-moon-fill';
-                }
-            }
+          sessionStorage.setItem('access_key', key);
         }
-        // 保存到 localStorage
-        localStorage.setItem('theme', theme);
+
+        this.showApp();
+        this.connectWebSocket();
+      } else {
+        this.showAuthError(data.message || '密钥错误');
+      }
+    } catch (error) {
+      this.showAuthError('验证失败，请重试');
+    } finally {
+      this.elements.authSubmitBtn.disabled = false;
+      this.elements.authSubmitBtn.textContent = '验证并进入';
+    }
+  }
+
+  showAuthError(message) {
+    this.elements.authError.textContent = message;
+    this.elements.authError.classList.add('show');
+    setTimeout(() => {
+      this.elements.authError.classList.remove('show');
+    }, 3000);
+  }
+
+  logout() {
+    localStorage.removeItem('access_key');
+    sessionStorage.removeItem('access_key');
+    sessionStorage.removeItem('claw_verified_session');
+    this.verifiedSessionId = null;
+    this.disconnectWebSocket();
+    this.showAuth();
+  }
+
+  // ===== 标签页切换 =====
+  switchTab(tabName) {
+    this.currentTab = tabName;
+
+    // 更新侧边栏导航
+    this.elements.navBtns.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+
+    // 更新移动端标签
+    this.elements.mobileTabBtns.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+
+    // 切换面板
+    this.elements.tabPanels.forEach(panel => {
+      panel.classList.toggle('active', panel.id === `tab-${tabName}`);
+    });
+
+    // 标签特定初始化
+    if (tabName === 'chat') {
+      this.scrollToBottom();
+    } else if (tabName === 'group') {
+      this.loadGroupMessages();
+      this.loadAssistants();
+    } else if (tabName === 'console') {
+      this.loadConsoleEvents();
+    } else if (tabName === 'memory') {
+      this.loadMemories();
+      this.loadDocuments();
+    } else if (tabName === 'settings') {
+      this.loadSettings();
+    }
+  }
+
+  // ===== 主题 =====
+  initTheme() {
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    this.setTheme(savedTheme);
+  }
+
+  setTheme(theme) {
+    document.body.dataset.theme = theme;
+    localStorage.setItem('theme', theme);
+
+    if (this.elements.themeSelect) {
+      this.elements.themeSelect.value = theme;
     }
 
-    // 切换主题
-    toggleTheme() {
-        const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
-        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-        console.log(`🎨 [主题] 切换主题: ${currentTheme} → ${newTheme}`);
-        this.setTheme(newTheme);
+    if (this.elements.themeToggleBtn) {
+      this.elements.themeToggleBtn.textContent = theme === 'dark' ? '☀️' : '🌙';
+    }
+  }
+
+  toggleTheme() {
+    const current = document.body.dataset.theme || 'light';
+    this.setTheme(current === 'light' ? 'dark' : 'light');
+  }
+
+  // ===== WebSocket =====
+  connectWebSocket() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return;
     }
 
-    // 显示验证界面
-    showAuth() {
-        this.authContainer.classList.remove('d-none');
-        this.chatContainer.classList.add('d-none');
-        this.accessKeyInput.focus();
-        
-        if (!this.authEventsBound) {
-            // 绑定表单事件
-            this.authForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                this.handleAuth();
-            });
-            
-            this.authSubmitBtn.addEventListener('click', () => {
-                this.handleAuth();
-            });
-            this.authEventsBound = true;
+    this.updateConnectionStatus('connecting');
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/chat?auth_session=${this.verifiedSessionId}`;
+
+    try {
+      this.ws = new WebSocket(wsUrl);
+
+      this.ws.onopen = () => {
+        console.log('✅ WebSocket 已连接');
+        this.isConnected = true;
+        this.reconnectDelay = 1000;
+        this.updateConnectionStatus('connected');
+        this.enableInput();
+      };
+
+      this.ws.onmessage = (event) => {
+        this.handleMessage(JSON.parse(event.data));
+      };
+
+      this.ws.onclose = (event) => {
+        console.log('🔌 WebSocket 已断开:', event.code);
+        this.isConnected = false;
+        this.updateConnectionStatus('disconnected');
+
+        if (!this.manualDisconnect) {
+          this.scheduleReconnect();
         }
+      };
+
+      this.ws.onerror = (error) => {
+        console.error('❌ WebSocket 错误:', error);
+        this.updateConnectionStatus('error');
+      };
+    } catch (error) {
+      console.error('❌ WebSocket 连接失败:', error);
+      this.scheduleReconnect();
     }
-    
-    // 处理验证
-    async handleAuth() {
-        const key = this.accessKeyInput.value.trim();
-        if (!key) return;
+  }
 
-        this.authSubmitBtn.disabled = true;
-        this.authSubmitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>验证中...';
-        this.authError.classList.add('d-none');
+  disconnectWebSocket() {
+    this.manualDisconnect = true;
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+  }
 
+  // ===== SSE 实时更新 =====
+  connectSSE() {
+    if (this.eventSource) {
+      this.eventSource.close();
+    }
+
+    // 通过 URL 参数传递 session ID
+    const sseUrl = `/api/stream?session_id=${this.verifiedSessionId}`;
+    this.eventSource = new EventSource(sseUrl);
+
+    this.eventSource.addEventListener('snapshot', (e) => {
+      const data = JSON.parse(e.data);
+      console.log('📦 SSE 快照已接收');
+
+      // 应用设置
+      if (data.settings) {
+        this.applySettings(data.settings);
+      }
+
+      // 加载控制台事件
+      if (data.consoleEvents) {
+        this.renderConsoleEvents(data.consoleEvents);
+      }
+
+      // 加载贴纸
+      if (data.stickers) {
+        this.renderStickerGrid(data.stickers);
+      }
+    });
+
+    this.eventSource.addEventListener('message', (e) => {
+      const message = JSON.parse(e.data);
+      // 避免重复消息
+      if (!this.messages.find(m => m.id === message.id)) {
+        this.addMessage(message.role, message.content, message);
+      }
+    });
+
+    this.eventSource.addEventListener('settings', (e) => {
+      const settings = JSON.parse(e.data);
+      this.applySettings(settings);
+    });
+
+    this.eventSource.addEventListener('console', (e) => {
+      const event = JSON.parse(e.data);
+      this.appendConsoleEvent(event);
+    });
+
+    this.eventSource.addEventListener('stickers', (e) => {
+      const stickers = JSON.parse(e.data);
+      this.renderStickerGrid(stickers);
+    });
+
+    this.eventSource.addEventListener('ping', () => {
+      // 心跳，保持连接
+    });
+
+    this.eventSource.onerror = (event) => {
+      console.warn('⚠️ SSE 连接错误');
+
+      // SSE 连接错误时只重连，不影响登录状态
+      this.eventSource.close();
+
+      // 延迟重连，避免频繁请求
+      console.warn('5秒后重连 SSE...');
+      setTimeout(() => {
+        // 重连前检查是否仍有有效的 session
+        if (this.verifiedSessionId) {
+          this.connectSSE();
+        }
+      }, 5000);
+    };
+  }
+
+  disconnectSSE() {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+  }
+
+  applySettings(settings) {
+    if (settings.userName) {
+      this.elements.userNameInput.value = settings.userName;
+      const initial = settings.userName[0].toUpperCase();
+      document.querySelector('.user-avatar').textContent = initial;
+    }
+    if (settings.assistantName) {
+      this.elements.assistantNameInput.value = settings.assistantName;
+    }
+    if (settings.theme) {
+      this.setTheme(settings.theme);
+      this.elements.themeSelect.value = settings.theme;
+    }
+    if (settings.notifications !== undefined) {
+      this.elements.notificationsToggle.checked = settings.notifications;
+    }
+  }
+
+  // ===== 系统通知 =====
+  async requestNotificationPermission() {
+    if (!('Notification' in window)) {
+      console.warn('浏览器不支持通知');
+      return false;
+    }
+
+    if (Notification.permission === 'granted') {
+      return true;
+    }
+
+    if (Notification.permission === 'denied') {
+      console.warn('通知权限被拒绝');
+      return false;
+    }
+
+    const permission = await Notification.requestPermission();
+    return permission === 'granted';
+  }
+
+  sendNotification(title, body) {
+    // 检查通知开关
+    if (!this.elements.notificationsToggle?.checked) return;
+
+    // 检查权限
+    if (Notification.permission !== 'granted') return;
+
+    try {
+      const notification = new Notification(title, {
+        body,
+        icon: '/favicon/apple-touch-icon.png',
+        badge: '/favicon/favicon-32x32.png'
+      });
+
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+
+      // 5秒后自动关闭
+      setTimeout(() => notification.close(), 5000);
+    } catch (error) {
+      console.warn('发送通知失败:', error);
+    }
+  }
+
+  appendConsoleEvent(event) {
+    const { consoleEvents } = this.elements;
+    const time = new Date(event.timestamp).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+
+    const html = `
+      <div class="console-event ${event.type}">
+        <div class="event-header">
+          <span class="event-type">${event.title}</span>
+          <span class="event-time">${time}</span>
+        </div>
+        <div class="event-body">${this.escapeHtml(event.body)}</div>
+      </div>
+    `;
+
+    consoleEvents.insertAdjacentHTML('beforeend', html);
+    consoleEvents.scrollTop = consoleEvents.scrollHeight;
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      console.log('🔄 尝试重连...');
+      this.connectWebSocket();
+    }, this.reconnectDelay);
+
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+  }
+
+  // ===== Toast 通知 =====
+  showToast(type, title, message) {
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+      <div class="toast-header">
+        <strong>${title}</strong>
+        <button class="toast-close" onclick="this.parentElement.parentElement.remove()">×</button>
+      </div>
+      <div class="toast-body">${message}</div>
+    `;
+
+    document.body.appendChild(toast);
+
+    // 3秒后自动消失
+    setTimeout(() => {
+      if (toast.parentElement) {
+        toast.remove();
+      }
+    }, 3000);
+  }
+
+  // ===== 离线状态处理 =====
+  setupOfflineDetection() {
+    window.addEventListener('online', () => {
+      this.showToast('success', '已恢复网络', '网络连接已恢复');
+      if (!this.isConnected) {
+        this.connectWebSocket();
+      }
+    });
+
+    window.addEventListener('offline', () => {
+      this.showToast('error', '网络断开', '网络连接已断开，请检查网络设置');
+    });
+  }
+
+  updateConnectionStatus(status) {
+    const { statusDot, statusText } = this.elements;
+
+    statusDot.className = 'status-dot';
+    switch (status) {
+      case 'connected':
+        statusDot.classList.add('connected');
+        statusText.textContent = '已连接';
+        break;
+      case 'connecting':
+        statusDot.classList.add('connecting');
+        statusText.textContent = '连接中...';
+        break;
+      case 'disconnected':
+        statusText.textContent = '已断开';
+        break;
+      case 'error':
+        statusText.textContent = '连接错误';
+        break;
+    }
+  }
+
+  enableInput() {
+    this.elements.messageInput.disabled = false;
+    this.elements.sendBtn.disabled = false;
+    this.elements.messageInput.placeholder = '输入消息...';
+
+    // 启用群聊输入
+    if (this.elements.groupMessageInput) {
+      this.elements.groupMessageInput.disabled = false;
+      this.elements.groupSendBtn.disabled = false;
+    }
+  }
+
+  // ===== 消息处理 =====
+  handleMessage(data) {
+    // 根据消息上下文决定路由
+    const scope = this.messageContext || 'chat';
+
+    switch (data.type) {
+      case 'message':
+        if (scope === 'group' && this.pendingGroupReplies.size > 0) {
+          // 群聊回复 - 更新对应的助手消息
+          this.updateGroupReply(data);
+        } else {
+          // 私聊消息
+          const message = this.addMessage('assistant', data.content);
+          this.sendNotification('新消息', data.content.substring(0, 100));
+          // 保存到后端
+          this.saveChatMessage(message);
+        }
+        break;
+      case 'thinking':
+        if (scope === 'group') {
+          // 群聊思考状态
+          this.updateGroupThinking(data);
+        } else {
+          this.showThinking(data.content);
+        }
+        break;
+      case 'typing.start':
+        this.showTyping();
+        break;
+      case 'typing.stop':
+        this.hideTyping();
+        break;
+      case 'error':
+        this.addSystemMessage(data.message || '发生错误', 'error');
+        break;
+    }
+  }
+
+  updateGroupReply(data) {
+    // 从 pendingGroupReplies 中取出第一个待回复的助手
+    const entries = Array.from(this.pendingGroupReplies.entries());
+    if (entries.length === 0) return;
+
+    const [thinkingMsgId, assistant] = entries[0];
+    this.pendingGroupReplies.delete(thinkingMsgId);
+
+    // 查找对应的"正在思考"消息并更新
+    const messages = this.groupMessages;
+    const thinkingMsg = messages.find(m => m.id === thinkingMsgId);
+
+    if (thinkingMsg) {
+      thinkingMsg.content = data.content;
+      thinkingMsg.thinking = data.thinking || '';
+
+      // 发送通知
+      this.sendNotification(`${assistant.name} 回复`, data.content.substring(0, 100));
+
+      // 更新 DOM
+      const msgEl = document.querySelector(`[data-message-id="${thinkingMsgId}"]`);
+      if (msgEl) {
+        const bubble = msgEl.querySelector('.bubble');
+        if (bubble) {
+          bubble.innerHTML = this.renderContent(data.content);
+          if (data.thinking) {
+            const thinkingEl = document.createElement('div');
+            thinkingEl.className = 'thinking-block';
+            thinkingEl.textContent = data.thinking;
+            bubble.parentNode.insertBefore(thinkingEl, bubble);
+          }
+        }
+      }
+
+      // 更新数据库
+      this.updateGroupMessageInDb(thinkingMsgId, data.content, data.thinking);
+    }
+
+    // 如果所有助手都回复完了，重置上下文
+    if (this.pendingGroupReplies.size === 0) {
+      this.messageContext = 'chat';
+    }
+  }
+
+  updateGroupThinking(data) {
+    // 可以显示思考动画
+    console.log('🤔 助手思考中:', data.content);
+  }
+
+  addMessage(role, content, options = {}) {
+    const message = {
+      id: options.id || `msg-${Date.now()}`,
+      role,
+      content,
+      timestamp: new Date().toISOString(),
+      thinking: options.thinking,
+      images: options.images,
+    };
+
+    this.messages.push(message);
+    this.renderMessage(message);
+    this.scrollToBottom();
+
+    return message;
+  }
+
+  addSystemMessage(content, type = 'system') {
+    const message = {
+      id: `sys-${Date.now()}`,
+      role: 'system',
+      content,
+      type,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.messages.push(message);
+    this.renderSystemMessage(message);
+    this.scrollToBottom();
+  }
+
+  renderMessages() {
+    const container = this.elements.messagesWrapper;
+    if (!container) return;
+
+    // 清空容器，保留欢迎消息
+    const welcome = container.querySelector('.welcome-message');
+    container.innerHTML = '';
+    if (welcome && this.messages.length === 0) {
+      container.appendChild(welcome);
+      welcome.style.display = 'block';
+    } else if (welcome) {
+      welcome.style.display = 'none';
+    }
+
+    // 渲染所有消息
+    this.messages.forEach(msg => this.renderMessage(msg));
+    this.scrollToBottom();
+  }
+
+  renderMessage(message) {
+    const { role, content, timestamp, thinking, images } = message;
+    const isMe = role === 'user';
+
+    // 隐藏欢迎消息
+    if (this.elements.welcomeMessage) {
+      this.elements.welcomeMessage.style.display = 'none';
+    }
+
+    const time = new Date(timestamp).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const initial = isMe ? 'W' : 'C';
+    const senderName = isMe ? '你' : 'Claw Agent';
+
+    let html = `
+      <div class="message-row ${isMe ? 'me' : ''}" data-message-id="${message.id}">
+        <div class="avatar">${initial}</div>
+        <div class="msg-col">
+          <span class="msg-sender">${senderName}</span>
+    `;
+
+    if (thinking) {
+      html += `<div class="thinking-block">${this.escapeHtml(thinking)}</div>`;
+    }
+
+    html += `<div class="bubble">`;
+    html += this.renderContent(content);
+
+    if (images && images.length > 0) {
+      images.forEach(img => {
+        html += `<img src="${img}" class="msg-image" onclick="app.openLightbox('${img}')" loading="lazy">`;
+      });
+    }
+
+    html += `
+          <div class="bubble-actions">
+            <button class="action-btn" onclick="app.copyMessage('${message.id}')" title="复制">📋</button>
+            <button class="action-btn" onclick="app.replyMessage('${message.id}')" title="回复">↩️</button>
+            <button class="action-btn" onclick="app.toggleFavorite('${message.id}')" title="收藏" data-favorite="${message.favorite ? 'true' : 'false'}">${message.favorite ? '⭐' : '☆'}</button>
+          </div>
+        </div>
+        <span class="msg-time">${time}</span>
+      </div>
+    </div>
+    `;
+
+    this.elements.messagesWrapper.insertAdjacentHTML('beforeend', html);
+  }
+
+  renderSystemMessage(message) {
+    const html = `
+      <div class="message-row" data-message-id="${message.id}">
+        <div class="msg-col" style="max-width: 100%; align-items: center;">
+          <div class="bubble" style="background: var(--panel-soft); font-size: .85rem; text-align: center;">
+            ${this.escapeHtml(message.content)}
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.elements.messagesWrapper.insertAdjacentHTML('beforeend', html);
+  }
+
+  renderContent(content) {
+    // 简单的 Markdown 渲染（粗体、斜体、代码、链接）
+    let html = this.escapeHtml(content);
+
+    // 代码块
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+
+    // 行内代码
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // 粗体
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // 斜体
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+    // 链接
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+    // 换行
+    html = html.replace(/\n/g, '<br>');
+
+    return html;
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  showThinking(content) {
+    this.pendingThinking = content;
+    // 可以在这里添加思考动画
+  }
+
+  showTyping() {
+    // 显示输入中动画
+  }
+
+  hideTyping() {
+    // 隐藏输入中动画
+  }
+
+  scrollToBottom(scope = 'chat') {
+    let container;
+    if (scope === 'group') {
+      container = document.getElementById('groupMessagesContainer');
+    } else {
+      container = this.elements.messagesContainer;
+    }
+    if (container) {
+      requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight;
+      });
+    }
+  }
+
+  // ===== 发送消息 =====
+  async sendMessage() {
+    const input = this.elements.messageInput;
+    const content = input.value.trim();
+
+    if (!content && this.drafts.length === 0 && this.pendingImages.length === 0) return;
+
+    // 检查连接状态
+    if (!this.isConnected) {
+      this.showToast('error', '未连接', '请等待连接恢复后再发送消息');
+      return;
+    }
+
+    // 如果有草稿，发送所有草稿
+    if (this.drafts.length > 0) {
+      for (const draft of this.drafts) {
         try {
-            const rememberMe = document.getElementById('rememberKey') && document.getElementById('rememberKey').checked;
-            const verifyResult = await this.verifyAccessKey(key, rememberMe);
-            if (!verifyResult.success) {
-                const errorDetails = this.formatVerifyErrorDetails(verifyResult);
-                const mainText = this.escapeHtml(errorDetails.main);
-                const metaText = errorDetails.meta ? this.escapeHtml(errorDetails.meta) : '';
-                const contentHtml = metaText
-                    ? `<div><i class="bi bi-exclamation-triangle me-1"></i>${mainText}</div><small class="d-block mt-1 opacity-75">${metaText}</small>`
-                    : `<i class="bi bi-exclamation-triangle me-1"></i>${mainText}`;
-                this.showAuthError(contentHtml, errorDetails.level);
-                this.accessKeyInput.value = '';
-                this.accessKeyInput.focus();
-            }
+          const message = this.addMessage('user', draft);
+          // 发送完整上下文（最近 20条消息）
+          const context = this.getContextMessages(20);
+          this.ws.send(JSON.stringify({
+            type: 'message',
+            content: draft,
+            context: context
+          }));
+          // 保存到后端
+          await this.saveChatMessage(message);
         } catch (error) {
-            console.error('验证失败:', error);
-            this.showAuthError('<i class="bi bi-exclamation-triangle me-1"></i>验证失败，请检查网络连接', 'warning');
-        } finally {
-            this.authSubmitBtn.disabled = false;
-            this.authSubmitBtn.innerHTML = '<i class="bi bi-unlock me-1"></i>验证并进入';
+          console.error('发送草稿失败:', error);
+          this.showToast('error', '发送失败', '消息发送失败，请重试');
         }
+      }
+      this.drafts = [];
+      this.saveDrafts();
+      this.renderDrafts();
     }
 
-    // 向后端验证密钥并保存服务端会话
-    async verifyAccessKey(key, rememberMe = false) {
-        try {
-            const response = await fetch('/api/verify', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key })
-            });
-            const result = await response.json();
-            if (!result.success || !result.sessionId) {
-                this.verifiedSessionId = null;
-                sessionStorage.removeItem('zeroclaw_verified_session');
-                if (response.status === 401) {
-                    localStorage.removeItem('access_key');
-                    sessionStorage.removeItem('access_key');
-                }
-                return {
-                    success: false,
-                    status: response.status,
-                    message: result.message || '密钥验证失败',
-                    retryAfterSeconds: result.retryAfterSeconds,
-                    remainingAttempts: result.remainingAttempts,
-                    windowResetAt: result.windowResetAt,
-                    blockedUntil: result.blockedUntil
-                };
-            }
+    // 发送当前输入（可能包含图片）
+    if (content || this.pendingImages.length > 0) {
+      try {
+        const images = this.pendingImages.map(img => img.dataUrl);
+        const message = this.addMessage('user', content || '', { images });
+        // 发送完整上下文（最近 20条消息）
+        const context = this.getContextMessages(20);
+        this.ws.send(JSON.stringify({
+          type: 'message',
+          content: content || '',
+          images: images,
+          context: context
+        }));
+        // 保存到后端
+        await this.saveChatMessage(message);
+        this.clearImages();
+      } catch (error) {
+        console.error('发送消息失败:', error);
+        this.showToast('error', '发送失败', '消息发送失败，请重试');
+      }
+    }
 
-            this.accessKey = key;
-            this.verifiedSessionId = result.sessionId;
-            sessionStorage.setItem('zeroclaw_verified_session', result.sessionId);
+    input.value = '';
+    input.style.height = 'auto';
+  }
 
-            if (rememberMe) {
-                localStorage.setItem('access_key', key);
-                sessionStorage.removeItem('access_key');
-            } else {
-                sessionStorage.setItem('access_key', key);
-                localStorage.removeItem('access_key');
-            }
+  getContextMessages(limit = 20) {
+    // 获取最近的消息作为上下文
+    const recentMessages = this.messages.slice(-limit);
+    return recentMessages.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+  }
 
-            console.log('验证成功，进入聊天界面');
-            this.showChat();
-            return { success: true };
-        } catch (error) {
-            console.warn('密钥验证失败，将返回登录界面:', error.message);
-            this.verifiedSessionId = null;
-            sessionStorage.removeItem('zeroclaw_verified_session');
-            localStorage.removeItem('access_key');
-            sessionStorage.removeItem('access_key');
-            this.showAuth();
-            return {
-                success: false,
-                status: 0,
-                message: '验证失败，请检查网络连接'
-            };
+  async saveChatMessage(message) {
+    try {
+      await fetch('/api/chat/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({
+          sessionId: this.sessionId,
+          content: message.content,
+          role: message.role,
+          thinking: message.thinking,
+          images: message.images,
+          parentMsgId: message.parentMsgId
+        })
+      });
+    } catch (error) {
+      console.error('保存消息失败:', error);
+    }
+  }
+
+  async saveGroupMessage(message) {
+    try {
+      await fetch('/api/group/reply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({
+          content: message.content,
+          assistantId: message.assistantId,
+          parentMsgId: message.parentMsgId,
+          thinking: message.thinking
+        })
+      });
+    } catch (error) {
+      console.error('保存群聊消息失败:', error);
+    }
+  }
+
+  async updateGroupMessageInDb(messageId, content, thinking) {
+    try {
+      await fetch(`/api/group/messages/${messageId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ content, thinking })
+      });
+    } catch (error) {
+      console.error('更新群聊消息失败:', error);
+    }
+  }
+
+  // ===== 草稿系统 =====
+  addDraft() {
+    const input = this.elements.messageInput;
+    const content = input.value.trim();
+
+    if (!content) return;
+
+    this.drafts.push(content);
+    this.saveDrafts();
+    input.value = '';
+    input.style.height = 'auto';
+
+    this.renderDrafts();
+  }
+
+  removeDraft(index) {
+    this.drafts.splice(index, 1);
+    this.saveDrafts();
+    this.renderDrafts();
+  }
+
+  saveDrafts() {
+    try {
+      localStorage.setItem('chat_drafts', JSON.stringify(this.drafts));
+    } catch (e) {
+      console.warn('保存草稿失败:', e);
+    }
+  }
+
+  loadDrafts() {
+    try {
+      const saved = localStorage.getItem('chat_drafts');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  renderDrafts() {
+    const area = this.elements.draftsArea;
+
+    if (this.drafts.length === 0) {
+      area.style.display = 'none';
+      area.innerHTML = '';
+      return;
+    }
+
+    area.style.display = 'flex';
+    area.innerHTML = this.drafts.map((draft, i) => `
+      <div class="draft-bubble">
+        <span class="draft-text">${this.escapeHtml(draft)}</span>
+        <button class="draft-delete" onclick="app.removeDraft(${i})">×</button>
+      </div>
+    `).join('');
+  }
+
+  // ===== 消息操作 =====
+  copyMessage(messageId) {
+    const message = this.messages.find(m => m.id === messageId);
+    if (!message) return;
+
+    navigator.clipboard.writeText(message.content).then(() => {
+      // 显示复制成功提示
+      const btn = document.querySelector(`[data-message-id="${messageId}"] .action-btn`);
+      if (btn) {
+        const original = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => btn.textContent = original, 1000);
+      }
+    }).catch(() => {
+      // 降级方案
+      const textarea = document.createElement('textarea');
+      textarea.value = message.content;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    });
+  }
+
+  replyMessage(messageId) {
+    const message = this.messages.find(m => m.id === messageId);
+    if (!message) return;
+
+    // 简单实现：在输入框添加引用
+    const quote = `> ${message.content.split('\n')[0]}\n\n`;
+    this.elements.messageInput.value = quote + this.elements.messageInput.value;
+    this.elements.messageInput.focus();
+  }
+
+  async toggleFavorite(messageId) {
+    const message = this.messages.find(m => m.id === messageId);
+    if (!message) return;
+
+    try {
+      const response = await fetch(`/api/messages/${messageId}/favorite`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
         }
-    }
+      });
 
-    formatVerifyErrorDetails(verifyResult) {
-        if (verifyResult.status === 429) {
-            const seconds = verifyResult.retryAfterSeconds ?? 0;
-            const blockedUntilText = this.formatDateTime(verifyResult.blockedUntil);
-            return {
-                main: `尝试次数过多，请 ${seconds} 秒后再试`,
-                meta: blockedUntilText ? `解锁时间：${blockedUntilText}` : '',
-                level: 'warning'
-            };
+      const data = await response.json();
+      if (data.success) {
+        message.favorite = data.favorite;
+
+        // 更新 UI
+        const btn = document.querySelector(`[data-message-id="${messageId}"] [data-favorite]`);
+        if (btn) {
+          btn.dataset.favorite = data.favorite ? 'true' : 'false';
+          btn.textContent = data.favorite ? '⭐' : '☆';
         }
-
-        if (verifyResult.status === 401) {
-            const remainingAttempts = verifyResult.remainingAttempts;
-            const resetAtText = this.formatDateTime(verifyResult.windowResetAt);
-            if (typeof remainingAttempts === 'number') {
-                if (remainingAttempts <= 0) {
-                    this.reportVerifyAnomaly('remaining_attempts_non_positive_on_401', verifyResult);
-                    return {
-                        main: '登录状态异常，请稍后重试',
-                        meta: resetAtText ? `计数重置：${resetAtText}` : '建议稍后再试或刷新页面',
-                        level: 'warning'
-                    };
-                }
-                const nearBlockHint = remainingAttempts === 1 ? '再错误 1 次将触发封禁' : '';
-                const metaParts = [];
-                if (nearBlockHint) metaParts.push(nearBlockHint);
-                if (resetAtText) metaParts.push(`计数重置：${resetAtText}`);
-                return {
-                    main: `密钥错误，还可重试 ${remainingAttempts} 次`,
-                    meta: metaParts.join('；'),
-                    level: 'danger'
-                };
-            }
-            return { main: verifyResult.message || '密钥错误，请重试', meta: '', level: 'danger' };
-        }
-
-        this.reportVerifyAnomaly('unexpected_verify_status', verifyResult);
-        return { main: verifyResult.message || '验证失败，请稍后重试', meta: '', level: 'warning' };
+      }
+    } catch (error) {
+      console.error('收藏失败:', error);
     }
+  }
 
-    formatDateTime(isoText) {
-        if (!isoText) return '';
-        const date = new Date(isoText);
-        if (Number.isNaN(date.getTime())) return '';
-        return date.toLocaleString();
-    }
+  // ===== 图片处理 =====
+  async handleImageSelect(files) {
+    if (!files || files.length === 0) return;
 
-    showAuthError(contentHtml, level = 'danger') {
-        this.authError.classList.remove('d-none', 'alert-danger', 'alert-warning', 'alert-info');
-        const levelClass = level === 'warning' ? 'alert-warning' : level === 'info' ? 'alert-info' : 'alert-danger';
-        this.authError.classList.add(levelClass);
-        this.authError.innerHTML = contentHtml;
-    }
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) continue;
+      if (file.size > 10 * 1024 * 1024) {
+        alert('图片大小不能超过 10MB');
+        continue;
+      }
 
-    reportVerifyAnomaly(reason, verifyResult) {
-        console.warn('[AUTH_VERIFY_ANOMALY]', {
-            reason,
-            status: verifyResult?.status,
-            message: verifyResult?.message,
-            remainingAttempts: verifyResult?.remainingAttempts,
-            retryAfterSeconds: verifyResult?.retryAfterSeconds,
-            blockedUntil: verifyResult?.blockedUntil,
-            windowResetAt: verifyResult?.windowResetAt
+      try {
+        const compressed = await this.compressImage(file);
+        const dataUrl = await this.fileToDataUrl(compressed);
+        this.pendingImages.push({
+          id: `img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: file.name,
+          dataUrl,
+          size: compressed.size
         });
+      } catch (error) {
+        console.error('图片处理失败:', error);
+      }
     }
 
-    // 显示聊天界面
-    showChat() {
-        if (!this.verifiedSessionId) {
-            this.showAuth();
-            return;
-        }
-        console.log('显示聊天界面...');
-        this.authContainer.classList.add('d-none');
-        this.chatContainer.classList.remove('d-none');
-        
-        // 确保 DOM 已更新
-        setTimeout(() => {
-            console.log('加载消息和建立连接...');
-            this.loadMessages();
-            this.setupEventListeners();
-            this.connect();
-        }, 100);
+    this.renderImagePreviews();
+    this.elements.imageUploadInput.value = '';
+  }
+
+  async compressImage(file) {
+    // 小图片不压缩
+    if (file.size < 280 * 1024) return file;
+
+    // GIF 不压缩
+    if (file.type === 'image/gif') return file;
+
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+
+          // 计算新尺寸（最大 1440px）
+          let { width, height } = img;
+          const maxEdge = 1440;
+          if (width > maxEdge || height > maxEdge) {
+            if (width > height) {
+              height = (height / width) * maxEdge;
+              width = maxEdge;
+            } else {
+              width = (width / height) * maxEdge;
+              height = maxEdge;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+
+          // 白色背景（JPEG 不支持透明）
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          canvas.toBlob(
+            (blob) => resolve(blob),
+            'image/jpeg',
+            0.8
+          );
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  renderImagePreviews() {
+    if (this.pendingImages.length === 0) {
+      this.imagePreviewContainer.style.display = 'none';
+      this.imagePreviewList.innerHTML = '';
+      return;
     }
-    
-    // 获取或创建会话 ID
-    getOrCreateSessionId() {
-        let sessionId = sessionStorage.getItem('zeroclaw_session_id');
-        if (!sessionId) {
-            sessionId = this.generateUUID();
-            sessionStorage.setItem('zeroclaw_session_id', sessionId);
-        }
-        return sessionId;
+
+    this.imagePreviewContainer.style.display = 'block';
+    this.imagePreviewList.innerHTML = this.pendingImages.map(img => `
+      <div class="image-preview-item">
+        <img src="${img.dataUrl}" alt="${img.name}">
+        <button class="image-preview-remove" onclick="app.removeImage('${img.id}')">×</button>
+      </div>
+    `).join('');
+  }
+
+  removeImage(imageId) {
+    this.pendingImages = this.pendingImages.filter(img => img.id !== imageId);
+    this.renderImagePreviews();
+  }
+
+  clearImages() {
+    this.pendingImages = [];
+    this.renderImagePreviews();
+  }
+
+  // ===== 贴纸系统 =====
+  getDefaultEmojis() {
+    return [
+      { id: 'emoji-smile', emoji: '😊', name: '微笑' },
+      { id: 'emoji-laugh', emoji: '😂', name: '大笑' },
+      { id: 'emoji-love', emoji: '❤️', name: '爱心' },
+      { id: 'emoji-thumbsup', emoji: '👍', name: '点赞' },
+      { id: 'emoji-think', emoji: '🤔', name: '思考' },
+      { id: 'emoji-cry', emoji: '😢', name: '哭泣' },
+      { id: 'emoji-angry', emoji: '😠', name: '生气' },
+      { id: 'emoji-surprised', emoji: '😮', name: '惊讶' },
+      { id: 'emoji-wink', emoji: '😉', name: '眨眼' },
+      { id: 'emoji-cool', emoji: '😎', name: '酷' },
+      { id: 'emoji-hug', emoji: '🤗', name: '拥抱' },
+      { id: 'emoji-kiss', emoji: '😘', name: '飞吻' },
+      { id: 'emoji-pray', emoji: '🙏', name: '祈祷' },
+      { id: 'emoji-clap', emoji: '👏', name: '鼓掌' },
+      { id: 'emoji-fire', emoji: '🔥', name: '火' },
+      { id: 'emoji-star', emoji: '⭐', name: '星星' },
+      { id: 'emoji-heart-eyes', emoji: '😍', name: '花痴' },
+      { id: 'emoji-rofl', emoji: '🤣', name: '笑翻' },
+      { id: 'emoji-thinking', emoji: '💭', name: '想法' },
+      { id: 'emoji-party', emoji: '🎉', name: '庆祝' }
+    ];
+  }
+
+  toggleStickerPanel() {
+    const { stickerPanel } = this.elements;
+    const isVisible = stickerPanel.style.display !== 'none';
+    stickerPanel.style.display = isVisible ? 'none' : 'flex';
+
+    // 如果是第一次打开，加载默认 emoji
+    if (!isVisible && !this.stickersLoaded) {
+      this.loadStickers();
+      this.stickersLoaded = true;
     }
+  }
+
+  async loadStickers() {
+    try {
+      const response = await fetch('/api/stickers', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // 合并默认 emoji 和自定义贴纸
+        const defaultEmojis = this.getDefaultEmojis();
+        const allStickers = [...defaultEmojis, ...data.stickers];
+        this.renderStickerGrid(allStickers);
+      }
+    } catch (error) {
+      console.error('加载贴纸失败:', error);
+      // 加载失败时只显示默认 emoji
+      this.renderStickerGrid(this.getDefaultEmojis());
+    }
+  }
+
+  renderStickerGrid(stickers) {
+    const { stickerGrid } = this.elements;
+
+    if (stickers.length === 0) {
+      stickerGrid.innerHTML = '<div class="sticker-empty">暂无贴纸</div>';
+      return;
+    }
+
+    stickerGrid.innerHTML = stickers.map(sticker => {
+      // 如果是 emoji，直接显示字符
+      if (sticker.emoji) {
+        return `
+          <div class="sticker-item emoji-item" onclick="app.insertEmoji('${sticker.emoji}')" title="${sticker.name}">
+            <span class="emoji-char">${sticker.emoji}</span>
+          </div>
+        `;
+      }
+      // 如果是图片贴纸
+      return `
+        <div class="sticker-item" onclick="app.sendSticker('${sticker.url}')" title="${sticker.name}">
+          <img src="${sticker.url}" alt="${sticker.name}" loading="lazy">
+        </div>
+      `;
+    }).join('');
+  }
+
+  insertEmoji(emoji) {
+    const input = this.currentTab === 'group'
+      ? this.elements.groupMessageInput
+      : this.elements.messageInput;
+
+    if (!input) return;
+
+    // 在光标位置插入 emoji
+    const cursorPos = input.selectionStart;
+    const textBefore = input.value.substring(0, cursorPos);
+    const textAfter = input.value.substring(cursorPos);
+
+    input.value = textBefore + emoji + textAfter;
+    input.focus();
+
+    // 设置光标位置到 emoji 之后
+    const newPos = cursorPos + emoji.length;
+    input.setSelectionRange(newPos, newPos);
+
+    // 关闭贴纸面板
+    this.elements.stickerPanel.style.display = 'none';
+  }
+
+  sendSticker(url) {
+    if (!this.isConnected) return;
+
+    // 发送贴纸作为图片消息
+    this.addMessage('user', '', { images: [url] });
+    this.ws.send(JSON.stringify({
+      type: 'message',
+      content: '',
+      images: [url]
+    }));
+
+    // 关闭贴纸面板
+    this.elements.stickerPanel.style.display = 'none';
+  }
+
+  async handleStickerUpload(files) {
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+    if (!file.type.startsWith('image/')) {
+      alert('请选择图片文件');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('贴纸大小不能超过 2MB');
+      return;
+    }
+
+    try {
+      const dataUrl = await this.fileToDataUrl(file);
+
+      const response = await fetch('/api/stickers', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({
+          dataUrl,
+          name: file.name
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        console.log('✅ 贴纸已上传');
+        this.loadStickers();
+      } else {
+        alert(data.error || '上传失败');
+      }
+    } catch (error) {
+      console.error('贴纸上传失败:', error);
+      alert('上传失败');
+    }
+
+    this.elements.stickerUploadInput.value = '';
+  }
+
+  // ===== 搜索 =====
+  toggleSearch() {
+    const { searchBar, searchInput } = this.elements;
+    const isVisible = searchBar.style.display !== 'none';
+
+    searchBar.style.display = isVisible ? 'none' : 'flex';
+
+    if (!isVisible) {
+      searchInput.focus();
+    } else {
+      searchInput.value = '';
+      this.clearSearchHighlights();
+    }
+  }
+
+  searchMessages(keyword) {
+    if (!keyword) {
+      this.elements.searchCount.textContent = '';
+      this.clearSearchHighlights();
+      return;
+    }
+
+    const results = this.messages.filter(m =>
+      m.content.toLowerCase().includes(keyword.toLowerCase())
+    );
+
+    this.elements.searchCount.textContent = `${results.length} 条结果`;
+    this.highlightSearchResults(keyword);
+  }
+
+  highlightSearchResults(keyword) {
+    this.clearSearchHighlights();
+
+    document.querySelectorAll('.message-row').forEach(row => {
+      const bubble = row.querySelector('.bubble');
+      if (bubble && bubble.textContent.toLowerCase().includes(keyword.toLowerCase())) {
+        row.classList.add('search-match');
+      }
+    });
+  }
+
+  clearSearchHighlights() {
+    document.querySelectorAll('.search-match').forEach(el => {
+      el.classList.remove('search-match');
+    });
+  }
+
+  // ===== 灯箱 =====
+  openLightbox(src) {
+    this.elements.lightboxImage.src = src;
+    this.elements.lightboxOriginal.href = src;
+    this.elements.lightboxFilename.textContent = src.split('/').pop();
+    this.elements.lightbox.style.display = 'flex';
+  }
+
+  closeLightbox() {
+    this.elements.lightbox.style.display = 'none';
+  }
+
+  // ===== 会话管理 =====
+  getOrCreateSessionId() {
+    // 优先从 URL 参数获取（用于分享链接）
+    const urlParams = new URLSearchParams(window.location.search);
+    let sessionId = urlParams.get('session');
+
+    if (sessionId) {
+      // 从 URL 获取的 sessionId，保存到当前会话
+      this.sessionIdFromUrl = true;
+      return sessionId;
+    }
+
+    // 生成新的 sessionId
+    sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.sessionIdFromUrl = false;
+
+    // 更新 URL（不刷新页面）
+    const newUrl = `${window.location.pathname}?session=${sessionId}`;
+    window.history.replaceState({}, '', newUrl);
+
+    return sessionId;
+  }
+
+  newChat() {
+    this.messages = [];
+    this.drafts = [];
+    this.elements.messagesWrapper.innerHTML = '';
+
+    if (this.elements.welcomeMessage) {
+      this.elements.messagesWrapper.appendChild(this.elements.welcomeMessage);
+      this.elements.welcomeMessage.style.display = 'block';
+    }
+
+    // 生成新的 sessionId 并更新 URL
+    this.sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.sessionIdFromUrl = false;
+
+    const newUrl = `${window.location.pathname}?session=${this.sessionId}`;
+    window.history.replaceState({}, '', newUrl);
+  }
+
+  async loadHistory() {
+    try {
+      const response = await fetch('/api/sessions', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        this.renderHistoryList(data.sessions);
+        this.elements.historyModal.style.display = 'flex';
+      }
+    } catch (error) {
+      console.error('加载历史记录失败:', error);
+    }
+  }
+
+  renderHistoryList(sessions) {
+    const select = this.elements.historySessionSelect;
+    select.innerHTML = '<option value="">请选择会话</option>';
+
+    sessions.forEach(session => {
+      const option = document.createElement('option');
+      option.value = session.sessionId;
+      const date = new Date(session.updatedAt).toLocaleString('zh-CN');
+      const count = session.messageCount || 0;
+      option.textContent = `${session.sessionId} (${date}, ${count}条消息)`;
+      select.appendChild(option);
+    });
+  }
+
+  async loadSession(sessionId) {
+    if (!sessionId) return;
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`, {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // 生成预览内容
+        const preview = data.messages.map(msg => {
+          const role = msg.role === 'user' ? '用户' : '助手';
+          return `${role}: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}`;
+        }).join('\n');
+
+        this.elements.historyPreview.textContent = preview || '暂无消息';
+        this.elements.historyMeta.textContent = `消息数: ${data.messages.length} | 更新时间: ${new Date(data.updatedAt).toLocaleString('zh-CN')}`;
+      }
+    } catch (error) {
+      console.error('加载会话失败:', error);
+    }
+  }
+
+  resumeSession() {
+    const sessionId = this.elements.historySessionSelect.value;
+    if (!sessionId) return;
+
+    // 跳转到对应会话的 URL
+    const url = `${window.location.pathname}?session=${sessionId}`;
+    window.location.href = url;
+  }
+
+  async deleteSession() {
+    const sessionId = this.elements.historySessionSelect.value;
+    if (!sessionId) return;
+
+    if (!confirm('确定要删除这个会话吗？')) return;
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.elements.historyPreview.textContent = '已删除';
+        this.loadHistory();
+      }
+    } catch (error) {
+      console.error('删除会话失败:', error);
+    }
+  }
+
+  // ===== 控制台 =====
+  addConsoleEvent(type, title, body) {
+    const event = {
+      id: `evt-${Date.now()}`,
+      type,
+      title,
+      body,
+      timestamp: new Date().toISOString(),
+    };
+
+    const time = new Date(event.timestamp).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+
+    const html = `
+      <div class="console-event ${type}">
+        <div class="event-header">
+          <span class="event-type">${title}</span>
+          <span class="event-time">${time}</span>
+        </div>
+        <div class="event-body">${this.escapeHtml(body)}</div>
+      </div>
+    `;
+
+    this.elements.consoleEvents.insertAdjacentHTML('beforeend', html);
+
+    // 自动滚动到底部
+    this.elements.consoleEvents.scrollTop = this.elements.consoleEvents.scrollHeight;
+  }
+
+  executeCommand(command) {
+    this.addConsoleEvent('command', '命令', command);
+
+    switch (command) {
+      case '/help':
+        this.addConsoleEvent('system', '帮助', '可用命令: /help, /clear, /status, /forge');
+        break;
+      case '/clear':
+        this.elements.consoleEvents.innerHTML = '';
+        break;
+      case '/status':
+        this.addConsoleEvent('system', '状态', `后端: ${this.backend}, 连接: ${this.isConnected ? '已连接' : '未连接'}`);
+        break;
+      case '/forge':
+        this.executeForge();
+        break;
+      default:
+        this.addConsoleEvent('error', '错误', `未知命令: ${command}`);
+    }
+  }
+
+  async loadConsoleEvents() {
+    try {
+      const response = await fetch('/api/console/events?limit=100', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        this.renderConsoleEvents(data.events);
+      }
+    } catch (error) {
+      console.error('加载控制台事件失败:', error);
+    }
+  }
+
+  renderConsoleEvents(events) {
+    const { consoleEvents } = this.elements;
+    consoleEvents.innerHTML = events.map(event => {
+      const time = new Date(event.timestamp).toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+
+      return `
+        <div class="console-event ${event.type}">
+          <div class="event-header">
+            <span class="event-type">${event.title}</span>
+            <span class="event-time">${time}</span>
+          </div>
+          <div class="event-body">${this.escapeHtml(event.body)}</div>
+        </div>
+      `;
+    }).join('');
+
+    // 滚动到底部
+    consoleEvents.scrollTop = consoleEvents.scrollHeight;
+  }
+
+  async executeForge() {
+    if (!this.sessionId) {
+      this.addConsoleEvent('error', '错误', '没有活跃的会话');
+      return;
+    }
+
+    this.addConsoleEvent('forge', '执行清理', '正在清理会话...');
+
+    try {
+      const response = await fetch('/api/sessions/forge', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ sessionId: this.sessionId })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.addConsoleEvent('forge', '清理完成', `原消息数: ${data.originalCount}, 清理后: ${data.cleanedCount}`);
+
+        // 重新加载当前会话
+        this.messages = [];
+        this.elements.messagesWrapper.innerHTML = '';
+        if (this.elements.welcomeMessage) {
+          this.elements.messagesWrapper.appendChild(this.elements.welcomeMessage);
+          this.elements.welcomeMessage.style.display = 'block';
+        }
+      } else {
+        this.addConsoleEvent('error', '清理失败', data.error || '未知错误');
+      }
+    } catch (error) {
+      this.addConsoleEvent('error', '清理失败', error.message);
+    }
+  }
+
+  // ===== 记忆系统 =====
+  async loadMemories() {
+    try {
+      const response = await fetch('/api/memories', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        this.renderMemoryList(data.memories);
+      }
+    } catch (error) {
+      console.error('加载记忆失败:', error);
+    }
+  }
+
+  renderMemoryList(memories) {
+    const { memoryList } = this.elements;
+
+    if (memories.length === 0) {
+      memoryList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🧠</div>
+          <p>暂无记忆</p>
+        </div>
+      `;
+      return;
+    }
+
+    // 按置顶和时间排序
+    const sorted = [...memories].sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return new Date(b.updatedAt) - new Date(a.updatedAt);
+    });
+
+    memoryList.innerHTML = sorted.map(memory => `
+      <div class="memory-item ${memory.pinned ? 'pinned' : ''}" data-memory-id="${memory.id}">
+        <div class="memory-header">
+          <div class="memory-title">${this.escapeHtml(memory.title)}</div>
+          <div class="memory-actions">
+            <button class="btn-icon" onclick="app.togglePinMemory('${memory.id}')" title="${memory.pinned ? '取消置顶' : '置顶'}">
+              ${memory.pinned ? '📌' : '📍'}
+            </button>
+            <button class="btn-icon" onclick="app.editMemory('${memory.id}')" title="编辑">✏️</button>
+            <button class="btn-icon" onclick="app.deleteMemory('${memory.id}')" title="删除">🗑️</button>
+          </div>
+        </div>
+        <div class="memory-content">${this.escapeHtml(memory.content).substring(0, 100)}${memory.content.length > 100 ? '...' : ''}</div>
+        <div class="memory-tags">
+          ${memory.tags.map(tag => `<span class="tag">${this.escapeHtml(tag)}</span>`).join('')}
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async createMemory() {
+    const title = prompt('记忆标题:');
+    if (!title) return;
+
+    const content = prompt('记忆内容:');
+    if (!content) return;
+
+    const tagsInput = prompt('标签（用逗号分隔）:');
+    const tags = tagsInput ? tagsInput.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+    try {
+      const response = await fetch('/api/memories', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ title, content, tags })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.loadMemories();
+      }
+    } catch (error) {
+      console.error('创建记忆失败:', error);
+    }
+  }
+
+  async editMemory(id) {
+    const memories = await this.fetchMemories();
+    const memory = memories.find(m => m.id === id);
+    if (!memory) return;
+
+    const title = prompt('记忆标题:', memory.title);
+    if (title === null) return;
+
+    const content = prompt('记忆内容:', memory.content);
+    if (content === null) return;
+
+    const tagsInput = prompt('标签（用逗号分隔）:', memory.tags.join(', '));
+    const tags = tagsInput ? tagsInput.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+    try {
+      const response = await fetch(`/api/memories/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ title, content, tags })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.loadMemories();
+      }
+    } catch (error) {
+      console.error('更新记忆失败:', error);
+    }
+  }
+
+  async deleteMemory(id) {
+    if (!confirm('确定要删除这条记忆吗？')) return;
+
+    try {
+      const response = await fetch(`/api/memories/${id}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.loadMemories();
+      }
+    } catch (error) {
+      console.error('删除记忆失败:', error);
+    }
+  }
+
+  async togglePinMemory(id) {
+    try {
+      const response = await fetch(`/api/memories/${id}/pin`, {
+        method: 'POST',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.loadMemories();
+      }
+    } catch (error) {
+      console.error('切换置顶失败:', error);
+    }
+  }
+
+  async fetchMemories() {
+    try {
+      const response = await fetch('/api/memories', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+      return data.success ? data.memories : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // ===== 助手系统 =====
+  async loadAssistants() {
+    try {
+      const response = await fetch('/api/assistants', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        this.assistants = data.assistants;
+        this.currentAssistant = this.assistants.find(a => a.isDefault) || this.assistants[0];
+        this.renderAssistantSelector();
+      }
+    } catch (error) {
+      console.error('加载助手配置失败:', error);
+    }
+  }
+
+  renderAssistantSelector() {
+    const selector = this.elements.assistantSelector;
+    if (!selector) return;
+
+    const list = selector.querySelector('.assistant-list');
+    if (!list) return;
+
+    list.innerHTML = this.assistants.map(assistant => `
+      <div class="assistant-chip ${assistant.id === this.currentAssistant?.id ? 'active' : ''}"
+           data-assistant-id="${assistant.id}"
+           onclick="app.selectAssistant('${assistant.id}')">
+        <span class="assistant-avatar">${assistant.avatar}</span>
+        <span class="assistant-name">${this.escapeHtml(assistant.name)}</span>
+      </div>
+    `).join('');
+  }
+
+  selectAssistant(id) {
+    this.currentAssistant = this.getAssistantById(id);
+    this.renderAssistantSelector();
+    this.elements.groupMessageInput?.focus();
+  }
+
+  showAssistantSettings() {
+    this.renderAssistantSettingsList();
+    this.elements.assistantSettingsModal.style.display = 'flex';
+  }
+
+  hideAssistantSettings() {
+    this.elements.assistantSettingsModal.style.display = 'none';
+  }
+
+  renderAssistantSettingsList() {
+    const list = this.elements.assistantSettingsList;
+    if (!list) return;
+
+    list.innerHTML = this.assistants.map(assistant => `
+      <div class="assistant-settings-item" data-assistant-id="${assistant.id}">
+        <div class="assistant-settings-header">
+          <div class="assistant-settings-avatar">${assistant.avatar}</div>
+          <div class="assistant-settings-info">
+            <div class="assistant-settings-name">${this.escapeHtml(assistant.name)}</div>
+            <div class="assistant-settings-triggers">${(assistant.triggers || []).join(', ')}</div>
+          </div>
+          <div class="assistant-settings-actions">
+            <button class="btn-icon" onclick="app.editAssistant('${assistant.id}')" title="编辑">✏️</button>
+            ${!assistant.isDefault ? `<button class="btn-icon" onclick="app.deleteAssistant('${assistant.id}')" title="删除">🗑️</button>` : ''}
+          </div>
+        </div>
+        <div class="assistant-settings-prompt">${this.escapeHtml(assistant.systemPrompt).substring(0, 80)}...</div>
+      </div>
+    `).join('');
+  }
+
+  editAssistant(id) {
+    const assistant = this.getAssistantById(id);
+    if (!assistant) return;
+
+    const name = prompt('助手名称:', assistant.name);
+    if (name === null) return;
+
+    const avatar = prompt('头像 (emoji):', assistant.avatar);
+    if (avatar === null) return;
+
+    const systemPrompt = prompt('提示词:', assistant.systemPrompt);
+    if (systemPrompt === null) return;
+
+    const triggersStr = prompt('触发词 (逗号分隔):', (assistant.triggers || []).join(', '));
+    const triggers = triggersStr ? triggersStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+    this.updateAssistant(id, { name, avatar, systemPrompt, triggers });
+  }
+
+  async updateAssistant(id, updates) {
+    try {
+      const response = await fetch(`/api/assistants/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify(updates)
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        // 更新本地数据
+        const index = this.assistants.findIndex(a => a.id === id);
+        if (index !== -1) {
+          this.assistants[index] = data.assistant;
+        }
+        this.renderAssistantSelector();
+        this.renderAssistantSettingsList();
+        this.showToast('success', '已保存', '助手配置已更新');
+      }
+    } catch (error) {
+      console.error('更新助手失败:', error);
+      this.showToast('error', '保存失败', '更新助手配置失败');
+    }
+  }
+
+  async deleteAssistant(id) {
+    if (!confirm('确定要删除这个助手吗？')) return;
+
+    try {
+      const response = await fetch(`/api/assistants/${id}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.assistants = this.assistants.filter(a => a.id !== id);
+        this.renderAssistantSelector();
+        this.renderAssistantSettingsList();
+        this.showToast('success', '已删除', '助手已删除');
+      }
+    } catch (error) {
+      console.error('删除助手失败:', error);
+      this.showToast('error', '删除失败', '删除助手失败');
+    }
+  }
+
+  async addAssistant() {
+    const name = prompt('助手名称:');
+    if (!name) return;
+
+    const avatar = prompt('头像 (emoji):', '🤖');
+    if (!avatar) return;
+
+    const systemPrompt = prompt('提示词:');
+    if (!systemPrompt) return;
+
+    const triggersStr = prompt('触发词 (逗号分隔):');
+    const triggers = triggersStr ? triggersStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+    try {
+      const response = await fetch('/api/assistants', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ name, avatar, systemPrompt, triggers })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.assistants.push(data.assistant);
+        this.renderAssistantSelector();
+        this.renderAssistantSettingsList();
+        this.showToast('success', '已添加', '新助手已创建');
+      }
+    } catch (error) {
+      console.error('添加助手失败:', error);
+      this.showToast('error', '添加失败', '创建助手失败');
+    }
+  }
+
+  getAssistantById(id) {
+    return this.assistants.find(a => a.id === id);
+  }
+
+  getAssistantByTrigger(content) {
+    const text = content.toLowerCase();
+    for (const assistant of this.assistants) {
+      if (assistant.triggers && assistant.triggers.some(t => text.includes(t.toLowerCase()))) {
+        return assistant;
+      }
+    }
+    return null;
+  }
+
+  selectAssistantForReply(content) {
+    // 1. 检查 @提及
+    const mentioned = this.getAssistantByTrigger(content);
+    if (mentioned) return mentioned;
+
+    // 2. 检查是否 @所有人 或 @默认助手
+    if (content.includes('@all') || content.includes('@所有人')) {
+      return this.currentAssistant;
+    }
+
+    // 3. 随机选择一个助手
+    const randomIndex = Math.floor(Math.random() * this.assistants.length);
+    return this.assistants[randomIndex];
+  }
+
+  async sendGroupMessage(content, images = []) {
+    if (!content && images.length === 0) return;
+
+    try {
+      const response = await fetch('/api/group/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({
+          content,
+          sender: '用户',
+          images
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.groupMessages.push(data.message);
+        this.renderGroupMessage(data.message);
+        this.scrollToBottom('group');
+
+        // 解析 @提及的助手
+        const mentionedAssistants = this.parseMentionedAssistants(content);
+
+        if (mentionedAssistants.length > 0) {
+          // 有 @提及，只有被@的助手回复
+          for (const assistant of mentionedAssistants) {
+            await this.generateGroupReply(content, assistant, data.message.id);
+          }
+        } else {
+          // 没有 @提及，所有助手同时回复（并行执行）
+          const promises = this.assistants.map(assistant =>
+            this.generateGroupReply(content, assistant, data.message.id)
+          );
+          await Promise.all(promises);
+        }
+      }
+    } catch (error) {
+      console.error('发送群聊消息失败:', error);
+      this.showToast('error', '发送失败', '消息发送失败，请重试');
+    }
+  }
+
+  parseMentionedAssistants(content) {
+    const mentioned = [];
+    const text = content.toLowerCase();
+
+    for (const assistant of this.assistants) {
+      // 检查 @助手名 或 触发词
+      const nameMatch = text.includes(`@${assistant.name.toLowerCase()}`);
+      const triggerMatch = assistant.triggers && assistant.triggers.some(t => text.includes(t.toLowerCase()));
+
+      if (nameMatch || triggerMatch) {
+        mentioned.push(assistant);
+      }
+    }
+
+    return mentioned;
+  }
+
+  showMentionMenu() {
+    const input = this.elements.groupMessageInput;
+    if (!input) return;
+
+    // 创建或显示菜单
+    let menu = document.getElementById('mentionMenu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'mentionMenu';
+      menu.className = 'mention-menu';
+      input.parentNode.appendChild(menu);
+    }
+
+    // 渲染助手列表
+    menu.innerHTML = this.assistants.map(assistant => `
+      <div class="mention-item" onclick="app.insertMention('${assistant.name}')">
+        <span class="mention-avatar">${assistant.avatar}</span>
+        <span class="mention-name">${this.escapeHtml(assistant.name)}</span>
+      </div>
+    `).join('');
+
+    menu.style.display = 'block';
+  }
+
+  hideMentionMenu() {
+    const menu = document.getElementById('mentionMenu');
+    if (menu) {
+      menu.style.display = 'none';
+    }
+  }
+
+  insertMention(name) {
+    const input = this.elements.groupMessageInput;
+    if (!input) return;
+
+    // 在光标位置插入 @助手名
+    const cursorPos = input.selectionStart;
+    const textBefore = input.value.substring(0, cursorPos);
+    const textAfter = input.value.substring(cursorPos);
+
+    // 移除光标前的 @符号
+    const lastAt = textBefore.lastIndexOf('@');
+    const newTextBefore = lastAt >= 0 ? textBefore.substring(0, lastAt) : textBefore;
+
+    input.value = newTextBefore + `@${name} ` + textAfter;
+    input.focus();
+
+    // 隐藏菜单
+    this.hideMentionMenu();
+  }
+
+  async generateGroupReply(userContent, assistant, parentMsgId) {
+    try {
+      // 设置消息上下文为群聊
+      this.messageContext = 'group';
+
+      // 创建一个"正在思考"的占位消息
+      const thinkingMsgId = `grp-thinking-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      const thinkingMsg = {
+        id: thinkingMsgId,
+        scope: 'group',
+        sender: assistant.name,
+        assistantId: assistant.id,
+        avatar: assistant.avatar,
+        color: assistant.color,
+        role: 'assistant',
+        content: '正在思考...',
+        thinking: '',
+        images: [],
+        parentMsgId: parentMsgId,
+        favorite: false,
+        timestamp: new Date().toISOString()
+      };
+
+      // 添加到待回复 Map
+      this.pendingGroupReplies.set(thinkingMsgId, assistant);
+
+      this.groupMessages.push(thinkingMsg);
+      this.renderGroupMessage(thinkingMsg);
+      this.scrollToBottom('group');
+
+      // 保存到数据库
+      await this.saveGroupMessage(thinkingMsg);
+
+      // 获取群聊上下文（最近 20条消息）
+      const groupContext = this.groupMessages.slice(-20).map(msg => ({
+        role: msg.role,
+        content: `${msg.sender}: ${msg.content}`
+      }));
+
+      // 通过 WebSocket 发送到 Gateway，带上助手信息和上下文
+      const wsMessage = {
+        type: 'message',
+        content: `${assistant.name}: ${userContent}`,
+        scope: 'group',
+        assistantId: assistant.id,
+        systemPrompt: assistant.systemPrompt,
+        context: groupContext
+      };
+
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(wsMessage));
+      } else {
+        // WebSocket 未连接，更新消息为错误状态
+        thinkingMsg.content = '连接断开，无法获取回复';
+        this.updateGroupMessage(thinkingMsg);
+        this.pendingGroupReplies.delete(thinkingMsgId);
+      }
+    } catch (error) {
+      console.error('生成群聊回复失败:', error);
+    }
+  }
+
+  updateGroupMessage(message) {
+    const msgEl = document.querySelector(`[data-message-id="${message.id}"]`);
+    if (msgEl) {
+      const bubble = msgEl.querySelector('.bubble');
+      if (bubble) {
+        bubble.innerHTML = this.renderContent(message.content);
+      }
+    }
+  }
+
+  renderGroupMessage(message) {
+    const isAssistant = message.role === 'assistant';
+    const time = new Date(message.timestamp).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const avatar = isAssistant ? (message.avatar || '🤖') : '👤';
+    const senderName = message.sender || '用户';
+    const color = isAssistant ? (message.color || '#c97b5a') : 'var(--text)';
+
+    let html = `
+      <div class="message-row ${isAssistant ? '' : 'me'}" data-message-id="${message.id}" style="--assistant-color: ${color}">
+        <div class="avatar" style="background: ${isAssistant ? color + '20' : 'var(--panel-soft)'}; color: ${color}">${avatar}</div>
+        <div class="msg-col">
+          <span class="msg-sender" style="color: ${color}">${this.escapeHtml(senderName)}</span>
+    `;
+
+    if (message.thinking) {
+      html += `<div class="thinking-block">${this.escapeHtml(message.thinking)}</div>`;
+    }
+
+    html += `<div class="bubble" style="${isAssistant ? 'border-left: 3px solid ' + color : ''}">`;
+    html += this.renderContent(message.content);
+
+    if (message.images && message.images.length > 0) {
+      message.images.forEach(img => {
+        html += `<img src="${img}" class="msg-image" onclick="app.openLightbox('${img}')" loading="lazy">`;
+      });
+    }
+
+    html += `
+          <div class="bubble-actions">
+            <button class="action-btn" onclick="app.copyGroupMessage('${message.id}')" title="复制">📋</button>
+            <button class="action-btn" onclick="app.toggleGroupFavorite('${message.id}')" title="收藏" data-favorite="${message.favorite ? 'true' : 'false'}">${message.favorite ? '⭐' : '☆'}</button>
+          </div>
+        </div>
+        <span class="msg-time">${time}</span>
+      </div>
+    </div>
+    `;
+
+    const container = document.querySelector('#tab-group .messages-wrapper');
+    if (container) {
+      container.insertAdjacentHTML('beforeend', html);
+    }
+  }
+
+  async loadGroupMessages() {
+    try {
+      const response = await fetch('/api/group/messages?limit=80', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        this.groupMessages = data.messages;
+        this.renderGroupMessages();
+      }
+    } catch (error) {
+      console.error('加载群聊消息失败:', error);
+    }
+  }
+
+  renderGroupMessages() {
+    const container = document.querySelector('#tab-group .messages-wrapper');
+    if (!container) return;
+
+    // 保留欢迎消息，清空其他
+    const welcome = container.querySelector('.welcome-message');
+    container.innerHTML = '';
+    if (welcome) container.appendChild(welcome);
+
+    // 渲染消息
+    this.groupMessages.forEach(msg => this.renderGroupMessage(msg));
+  }
+
+  copyGroupMessage(messageId) {
+    const message = this.groupMessages.find(m => m.id === messageId);
+    if (!message) return;
+
+    navigator.clipboard.writeText(message.content).then(() => {
+      this.showToast('success', '已复制', '消息已复制到剪贴板');
+    });
+  }
+
+  async toggleGroupFavorite(messageId) {
+    try {
+      const response = await fetch(`/api/group/messages/${messageId}/favorite`, {
+        method: 'POST',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        const message = this.groupMessages.find(m => m.id === messageId);
+        if (message) {
+          message.favorite = data.message.favorite;
+          // 更新 UI
+          const btn = document.querySelector(`[data-message-id="${messageId}"] [data-favorite]`);
+          if (btn) {
+            btn.dataset.favorite = data.message.favorite ? 'true' : 'false';
+            btn.textContent = data.message.favorite ? '⭐' : '☆';
+          }
+        }
+      }
+    } catch (error) {
+      console.error('收藏失败:', error);
+    }
+  }
+
+  // ===== 文档系统 =====
+  async loadDocuments() {
+    try {
+      const response = await fetch('/api/documents', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        this.renderDocumentList(data.documents);
+      }
+    } catch (error) {
+      console.error('加载文档失败:', error);
+    }
+  }
+
+  renderDocumentList(documents) {
+    const { documentList } = this.elements;
+
+    if (documents.length === 0) {
+      documentList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">📄</div>
+          <p>暂无文档</p>
+        </div>
+      `;
+      return;
+    }
+
+    documentList.innerHTML = documents.map(doc => `
+      <div class="document-item" data-document-id="${doc.id}">
+        <div class="document-header">
+          <div class="document-title">${this.escapeHtml(doc.title)}</div>
+          <div class="document-actions">
+            <button class="btn-icon" onclick="app.viewDocument('${doc.id}')" title="查看">👁️</button>
+            <button class="btn-icon" onclick="app.deleteDocument('${doc.id}')" title="删除">🗑️</button>
+          </div>
+        </div>
+        <div class="document-meta">
+          <span>大小: ${this.formatSize(doc.size)}</span>
+          <span>创建: ${new Date(doc.createdAt).toLocaleDateString('zh-CN')}</span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  async createDocument() {
+    const title = prompt('文档标题:');
+    if (!title) return;
+
+    const content = prompt('文档内容:');
+    if (!content) return;
+
+    try {
+      const response = await fetch('/api/documents', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ title, content })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.loadDocuments();
+      } else {
+        alert(data.error || '上传失败');
+      }
+    } catch (error) {
+      console.error('创建文档失败:', error);
+      alert('上传失败');
+    }
+  }
+
+  async viewDocument(id) {
+    try {
+      const response = await fetch(`/api/documents/${id}`, {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        alert(`文档内容:\n\n${data.content}`);
+      }
+    } catch (error) {
+      console.error('查看文档失败:', error);
+    }
+  }
+
+  async deleteDocument(id) {
+    if (!confirm('确定要删除这个文档吗？')) return;
+
+    try {
+      const response = await fetch(`/api/documents/${id}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.loadDocuments();
+      }
+    } catch (error) {
+      console.error('删除文档失败:', error);
+    }
+  }
+
+  // ===== 事件绑定 =====
+  bindEvents() {
+    const { elements } = this;
+
+    // 认证
+    elements.authForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const key = elements.accessKeyInput.value.trim();
+      if (key) {
+        this.verifyAccessKey(key, elements.rememberKey.checked);
+      }
+    });
+
+    // 侧边栏导航
+    elements.navBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.switchTab(btn.dataset.tab);
+      });
+    });
+
+    // 移动端标签
+    elements.mobileTabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.switchTab(btn.dataset.tab);
+      });
+    });
 
     // 退出登录
-    logout() {
-        if (this.persistTimer) {
-            clearTimeout(this.persistTimer);
-            this.persistTimer = null;
-        }
-        if (this.connectionWatchdogTimer) {
-            clearInterval(this.connectionWatchdogTimer);
-            this.connectionWatchdogTimer = null;
-        }
-        this.clearReconnectTimer();
-        this.clearConnectTimeout();
-        // 清除保存的密钥
-        localStorage.removeItem('access_key');
-        sessionStorage.removeItem('access_key');
-        sessionStorage.removeItem('zeroclaw_verified_session');
-        // 断开连接
-        this.disconnect({ suppressReconnect: true });
-        // 重置状态
-        this.accessKey = null;
-        this.verifiedSessionId = null;
-        this.messages = [];
-        this.pendingContent = '';
-        this.pendingThinking = '';
-        this.capturedThinking = '';
-        this.streamingContent = '';
-        this.streamingThinking = '';
-        this.isTyping = false;
+    elements.logoutBtn.addEventListener('click', () => this.logout());
 
-        // 清理当前会话消息视图
-        const messageEls = this.messagesWrapper ? this.messagesWrapper.querySelectorAll('.message') : [];
-        messageEls.forEach((el) => el.remove());
-        this.removeStreamingMessage();
-        if (this.welcomeMessage) {
-            this.welcomeMessage.style.display = 'flex';
-        }
-        if (this.messageInput) {
-            this.messageInput.value = '';
-            this.messageInput.style.height = 'auto';
-        }
-        if (this.authError) {
-            this.authError.classList.add('d-none');
-        }
-
-        // 不刷新页面，直接回到登录界面，避免刷新触发 502
-        this.showAuth();
-    }
-    
-    // 生成 UUID
-    generateUUID() {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-            const r = Math.random() * 16 | 0;
-            const v = c === 'x' ? r : (r & 0x3 | 0x8);
-            return v.toString(16);
-        });
-    }
-    
-    // 设置事件监听
-    setupEventListeners() {
-        this.startConnectionWatchdog();
-
-        if (this.chatEventsBound) {
-            return;
-        }
-
-        // 发送按钮
-        this.sendBtn.addEventListener('click', () => this.sendMessage());
-        
-        // 输入框键盘事件
-        this.messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.sendMessage();
-            }
-        });
-        
-        // 自动调整文本框高度
-        this.messageInput.addEventListener('input', () => {
-            this.messageInput.style.height = 'auto';
-            this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
-        });
-        
-        // 新建会话
-        if (this.newChatBtn) {
-            this.newChatBtn.addEventListener('click', () => this.createNewChat());
-        }
-
-        // 会话记录
-        if (this.historyBtn) {
-            this.historyBtn.addEventListener('click', () => this.openHistoryModal());
-        }
-        if (this.refreshHistoryBtn) {
-            this.refreshHistoryBtn.addEventListener('click', () => this.refreshHistorySessions());
-        }
-        if (this.historyDownloadBtn) {
-            this.historyDownloadBtn.addEventListener('click', () => {
-                const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
-                this.downloadSessionRecord(selectedSessionId);
-            });
-        }
-        if (this.historyResumeBtn) {
-            this.historyResumeBtn.addEventListener('click', () => {
-                const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
-                if (selectedSessionId && confirm('将切换到该会话继续聊天，当前未保存的消息将丢失。')) {
-                    this.resumeSession(selectedSessionId);
-                }
-            });
-        }
-        if (this.historyDeleteBtn) {
-            this.historyDeleteBtn.addEventListener('click', () => {
-                const selectedSessionId = this.historySessionSelect ? this.historySessionSelect.value : '';
-                if (selectedSessionId && confirm('确定要删除该会话记录吗？此操作不可恢复。')) {
-                    this.deleteSession(selectedSessionId);
-                }
-            });
-        }
-        if (this.historySessionSelect) {
-            this.historySessionSelect.addEventListener('change', () => {
-                const selected = this.historySessionSelect.value;
-                if (selected) {
-                    this.loadHistorySession(selected);
-                } else {
-                    this.historyMeta.textContent = '';
-                    this.historyPreview.textContent = '暂无会话记录';
-                }
-            });
-        }
-
-        // 主题切换
-        this.themeToggleBtn.addEventListener('click', () => {
-            this.toggleTheme();
-        });
-
-        // 页面恢复为活动页时立即补连，避免后台断线后长期离线
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                this.pageHiddenAt = Date.now();
-                return;
-            }
-            this.handleForegroundResume('visibilitychange');
-        });
-        window.addEventListener('pageshow', () => this.handleForegroundResume('pageshow'));
-        window.addEventListener('focus', () => this.handleForegroundResume('focus'));
-        window.addEventListener('online', () => this.handleForegroundResume('online'));
-
-        // 图片上传（仅 picoclaw）
-        const imageUploadBtn = document.getElementById('imageUploadBtn');
-        const imageUploadInput = document.getElementById('imageUploadInput');
-        if (imageUploadBtn && imageUploadInput) {
-            imageUploadBtn.addEventListener('click', () => imageUploadInput.click());
-            imageUploadInput.addEventListener('change', (e) => this.handleImageUpload(e));
-        }
-
-        // 退出登录
-        document.getElementById('logoutBtn').addEventListener('click', () => {
-            if (confirm('确定要退出登录吗？')) {
-                this.logout();
-            }
-        });
-
-        this.chatEventsBound = true;
-    }
-    
-    // 连接 WebSocket
-    connect() {
-        if (!this.verifiedSessionId) return;
-        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-            return;
-        }
-
-        this.clearReconnectTimer();
-        this.clearConnectTimeout();
-        this.manualDisconnect = false;
-
-        // 使用相对路径,通过 Web 服务器代理到 Gateway
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsHost = window.location.host;
-        const url = `${wsProtocol}//${wsHost}/ws/chat`;
-        
-        const params = new URLSearchParams();
-        params.set('session_id', this.sessionId);
-        params.set('auth_session', this.verifiedSessionId);
-        if (this.token) {
-            params.set('token', this.token);
-        }
-
-        const fullUrl = `${url}?${params.toString()}`;
-
-        console.log('═'.repeat(60));
-        console.log('🔌 [WebSocket] 正在连接到 ZeroClaw Gateway (通过代理)');
-        console.log('═'.repeat(60));
-        console.log('📍 Web 服务器:', window.location.origin);
-        console.log('🔗 WebSocket URL:', fullUrl);
-        console.log('📡 模式: WebSocket 代理 (服务器内部转发)');
-        console.log('🆔 Session ID:', this.sessionId);
-        console.log('🔑 Token:', this.token ? '已配置 (' + this.token.substring(0, 8) + '...)' : '未配置');
-        console.log('─'.repeat(60));
-
-        // 不传递子协议以兼容 ZeroClaw v0.1.7
-        const socket = new WebSocket(fullUrl);
-        this.ws = socket;
-        this.connectTimeoutTimer = setTimeout(() => {
-            if (this.ws !== socket) return;
-            if (socket.readyState === WebSocket.CONNECTING) {
-                console.warn('⚠️ [WebSocket] 连接超时，准备重连');
-                try {
-                    socket.close();
-                } catch {
-                    this.ws = null;
-                }
-                this.setConnected(false);
-                this.scheduleReconnect(1000, 'connect-timeout');
-            }
-        }, 10000);
-
-        socket.onopen = () => {
-            if (this.ws !== socket) return;
-            console.log('✅ [WebSocket] 连接已成功建立');
-            console.log('📊 连接信息:');
-            console.log('   - URL:', fullUrl);
-            console.log('   - 协议:', socket.protocol || '(无子协议)');
-            console.log('   - 状态:', socket.readyState === WebSocket.OPEN ? 'OPEN' : 'UNKNOWN');
-            console.log('═'.repeat(60));
-            this.clearConnectTimeout();
-            this.clearReconnectTimer();
-            this.setConnected(true);
-        };
-
-        socket.onmessage = (event) => {
-            if (this.ws !== socket) return;
-            this.lastWsMessageAt = Date.now();
-            try {
-                const msg = JSON.parse(event.data);
-                // 记录关键事件
-                if (['session_start', 'connected', 'error'].includes(msg.type)) {
-                    console.log(`📨 [WebSocket] 收到事件: ${msg.type}`, msg);
-                }
-                this.handleMessage(msg);
-            } catch (error) {
-                console.error('❌ [WebSocket] 解析消息失败:', error);
-            }
-        };
-
-        socket.onclose = (event) => {
-            if (this.ws !== socket) return;
-            console.log('─'.repeat(60));
-            console.log('❌ [WebSocket] 连接已关闭');
-            console.log('📊 关闭信息:');
-            console.log('   - Code:', event.code, this.getCloseCodeDescription(event.code));
-            console.log('   - Reason:', event.reason || '无');
-            console.log('   -  Was Clean:', event.wasClean);
-            console.log('─'.repeat(60));
-            this.clearConnectTimeout();
-            this.ws = null;
-            this.setConnected(false);
-
-            if (event.code === 4401) {
-                this.addAgentMessage('🔒 会话已过期，请重新登录。');
-                return;
-            }
-
-            if (this.manualDisconnect) {
-                this.manualDisconnect = false;
-                return;
-            }
-
-            // 自动重连（包含后台页面恢复后的异常断开场景）
-            this.scheduleReconnect(3000, `close:${event.code}`);
-        };
-
-        socket.onerror = (error) => {
-            if (this.ws !== socket) return;
-            console.error('═'.repeat(60));
-            console.error('❌ [WebSocket] 连接错误');
-            console.error('📍 目标 URL:', fullUrl);
-            console.error('🔍 错误详情:', error);
-            console.error('💡 可能原因:');
-            console.error('   1. Gateway 未启动或端口错误');
-            console.error('   2. 网络连接问题');
-            console.error('   3. 代理配置问题');
-            console.error('═'.repeat(60));
-            this.setConnected(false);
-            if (!this.manualDisconnect) {
-                this.scheduleReconnect(2000, 'onerror');
-            }
-        };
-    }
-
-    // 获取 WebSocket 关闭代码说明
-    getCloseCodeDescription(code) {
-        const descriptions = {
-            1000: '正常关闭',
-            1001: '端点离开',
-            1002: '协议错误',
-            1003: '不支持的数据类型',
-            1005: '未提供状态码',
-            1006: '异常断开',
-            1008: '政策违规',
-            1009: '消息过大',
-            1011: '服务器内部错误',
-            1012: '服务重启',
-            1013: '服务暂时不可用'
-        };
-        return descriptions[code] || '未知代码';
-    }
-    
-    // 断开连接
-    disconnect(options = {}) {
-        const { suppressReconnect = true } = options;
-        this.manualDisconnect = suppressReconnect;
-        this.clearReconnectTimer();
-        this.clearConnectTimeout();
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
-    }
-    
-    // 重连
-    reconnect() {
-        this.disconnect({ suppressReconnect: true });
-        this.scheduleReconnect(500, 'manual-reconnect');
-    }
-
-    clearReconnectTimer() {
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
-    }
-
-    clearConnectTimeout() {
-        if (this.connectTimeoutTimer) {
-            clearTimeout(this.connectTimeoutTimer);
-            this.connectTimeoutTimer = null;
-        }
-    }
-
-    scheduleReconnect(delayMs = 3000, reason = 'unknown') {
-        if (!this.verifiedSessionId) return;
-        this.clearReconnectTimer();
-        console.log(`🔄 [WebSocket] 将在 ${Math.ceil(delayMs / 1000)} 秒后尝试重连，原因: ${reason}`);
-        this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            console.log('🔄 [WebSocket] 正在重连...');
-            this.connect();
-        }, delayMs);
-    }
-
-    ensureConnection(reason = 'watchdog', immediate = false) {
-        if (!this.verifiedSessionId) return;
-        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-            return;
-        }
-        if (immediate) {
-            this.clearReconnectTimer();
-            console.log(`🔄 [WebSocket] 页面恢复，立即补连，原因: ${reason}`);
-            this.connect();
-            return;
-        }
-        this.scheduleReconnect(300, reason);
-    }
-
-    handleForegroundResume(reason = 'foreground') {
-        const hiddenAt = this.pageHiddenAt;
-        this.ensureConnection(reason, true);
-        if (hiddenAt && this.lastWsMessageAt >= hiddenAt) {
-            if (this.pendingContent || this.pendingThinking) {
-                this.updateStreaming();
-            }
-            this.scrollToBottom();
-        }
-        this.setConnected(this.isConnected);
-        this.pageHiddenAt = 0;
-    }
-
-    startConnectionWatchdog() {
-        if (this.connectionWatchdogTimer) return;
-        this.connectionWatchdogTimer = setInterval(() => {
-            this.ensureConnection('watchdog');
-        }, 15000);
-    }
-    
-    // 设置连接状态
-    setConnected(connected) {
-        this.isConnected = connected;
-        
-        if (connected) {
-            const waiting = this.hasPendingResponse();
-            this.statusDot.classList.remove('disconnected');
-            this.statusDot.classList.add('connected');
-            this.statusText.textContent = waiting ? '等待回复...' : '已连接';
-            this.messageInput.disabled = false;
-            this.sendBtn.disabled = waiting;
-            this.sendBtn.innerHTML = waiting ? '<span class="spinner-border spinner-border-sm"></span>' : '<i class="bi bi-send-fill"></i>';
+    // 消息输入
+    elements.messageInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) {
+          this.sendMessage();
         } else {
-            this.statusDot.classList.remove('connected');
-            this.statusDot.classList.add('disconnected');
-            this.statusText.textContent = '已断开';
-            this.messageInput.disabled = true;
-            this.sendBtn.disabled = true;
-            this.sendBtn.innerHTML = '<i class="bi bi-send-fill"></i>';
+          this.addDraft();
         }
-    }
+      }
+    });
 
-    hasPendingResponse() {
-        return this.isTyping || Boolean(this.pendingContent || this.pendingThinking || this.streamingContent || this.streamingThinking);
-    }
-    
-    // 处理 WebSocket 消息
-    handleMessage(msg) {
-        switch (msg.type) {
-            case 'session_start':
-                console.log('📨 [Gateway] 会话启动');
-                console.log('   - Session ID:', msg.session_id);
-                console.log('   - 会话名称:', msg.name || '未命名');
-                console.log('   - 是否恢复:', msg.resumed ? '是' : '否');
-                console.log('   - 历史消息数:', msg.message_count || 0);
-                console.log('   - Gateway URL:', this.gatewayUrl);
-                break;
+    // 自动调整输入框高度
+    elements.messageInput.addEventListener('input', () => {
+      elements.messageInput.style.height = 'auto';
+      elements.messageInput.style.height = Math.min(elements.messageInput.scrollHeight, 200) + 'px';
+    });
 
-            case 'connected':
-                console.log('📨 [Gateway] 连接确认');
-                console.log('   - 消息:', msg.message || 'Connection established');
-                break;
+    // 发送按钮
+    elements.sendBtn.addEventListener('click', () => this.sendMessage());
 
-            case 'agent_start':
-                console.log('🤖 [Gateway] Agent 启动');
-                console.log('   - Provider:', msg.provider || '未知');
-                console.log('   - Model:', msg.model || '未知');
-                break;
-
-            case 'thinking':
-                this.isTyping = true;
-                this.pendingThinking += msg.content || '';
-                this.updateStreaming();
-                this.setConnected(this.isConnected);
-                break;
-
-            case 'chunk':
-                this.isTyping = true;
-                this.pendingContent += msg.content || '';
-                this.updateStreaming();
-                this.setConnected(this.isConnected);
-                break;
-
-            case 'chunk_reset':
-                console.log('🔄 [Gateway] 重置流式缓冲区');
-                this.capturedThinking = this.pendingThinking;
-                this.pendingContent = '';
-                this.pendingThinking = '';
-                this.streamingContent = '';
-                this.streamingThinking = '';
-                this.removeStreamingMessage();
-                break;
-
-            case 'message':
-            case 'done': {
-                let content = msg.full_response || msg.content || this.pendingContent;
-                const thinking = this.capturedThinking || this.pendingThinking || undefined;
-
-                console.log('✅ [Gateway] 消息完成');
-                console.log('   - 内容长度:', content?.length || 0, '字符');
-                console.log('   - 思考长度:', thinking?.length || 0, '字符');
-
-                // 检测并解析工具调用格式
-                if (content && typeof content === 'string') {
-                    // 匹配 shell 命令格式
-                    const shellMatch = content.match(/`+[\s\n]*shell\(command="([^"]+)"\)[\s\n]*`+/);
-                    if (shellMatch) {
-                        const shellCmd = shellMatch[1];
-                        console.log('🔧 [Gateway] 检测到 shell 工具调用:', shellCmd);
-                        
-                        // 创建工具调用消息
-                        this.addToolCallMessage('shell', { command: shellCmd });
-                        
-                        // 在前端执行 shell 命令
-                        this.executeShellCommand(shellCmd);
-                        
-                        // 不显示原始命令，等待执行结果
-                        content = null;
-                    }
-                }
-
-                if (content) {
-                    this.addAgentMessage(content, thinking);
-                }
-
-                this.pendingContent = '';
-                this.pendingThinking = '';
-                this.capturedThinking = '';
-                this.streamingContent = '';
-                this.streamingThinking = '';
-                this.isTyping = false;
-                this.removeStreamingMessage();
-                this.setConnected(this.isConnected);
-                break;
-            }
-
-            case 'agent_end':
-                console.log('🏁 [Gateway] Agent 完成');
-                console.log('   - Provider:', msg.provider || '未知');
-                console.log('   - Model:', msg.model || '未知');
-                this.finalizeToolCalls();
-                break;
-
-            case 'tool_call': {
-                const toolName = msg.name || msg.tool || 'unknown';
-                const toolArgs = msg.args || msg.input || {};
-                console.log('🔧 [Gateway] 工具调用:', toolName);
-                console.log('   - 参数:', JSON.stringify(toolArgs, null, 2));
-                this.addToolCallMessage(toolName, toolArgs);
-                break;
-            }
-
-            case 'tool_result': {
-                const output = msg.output || msg.result || '';
-                console.log('✅ [Gateway] 工具结果');
-                console.log('   - 输出长度:', output.length, '字符');
-                console.log('   - 输出预览:', output.substring(0, 100) + (output.length > 100 ? '...' : ''));
-                this.updateToolCallOutput(output);
-                break;
-            }
-                
-            case 'error':
-                console.error('❌ [Gateway] 服务器错误');
-                console.error('   - 错误代码:', msg.code || '未知');
-                console.error('   - 错误消息:', msg.message || '未知错误');
-                console.error('   - Gateway URL:', this.gatewayUrl);
-                this.addAgentMessage(`❌ Gateway 错误 [${msg.code || 'UNKNOWN'}]: ${msg.message || '未知错误'}`);
-                this.isTyping = false;
-                this.pendingContent = '';
-                this.pendingThinking = '';
-                this.removeStreamingMessage();
-                this.setConnected(this.isConnected);
-                break;
+    // 群聊输入
+    if (elements.groupMessageInput) {
+      elements.groupMessageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const content = elements.groupMessageInput.value.trim();
+          if (content) {
+            this.sendGroupMessage(content);
+            elements.groupMessageInput.value = '';
+            elements.groupMessageInput.style.height = 'auto';
+            this.hideMentionMenu();
+          }
         }
-    }
-    
-    // 发送消息
-    sendMessage() {
-        const content = this.messageInput.value.trim();
-        if ((!content && this.pendingImages.length === 0) || !this.isConnected || this.hasPendingResponse()) return;
-
-        // 添加用户消息
-        this.addUserMessage(content, this.pendingImages.length > 0 ? [...this.pendingImages] : null);
-
-        // 发送到服务器
-        try {
-            const msg = { type: 'message', content };
-            if (this.pendingImages.length > 0) {
-                msg.images = [...this.pendingImages];
-            }
-            const msgData = JSON.stringify(msg);
-            console.log('📤 [Gateway] 发送消息');
-            console.log('   - 内容长度:', content.length, '字符');
-            console.log('   - 图片数量:', this.pendingImages.length);
-            console.log('   - WebSocket 状态:', this.ws.readyState === WebSocket.OPEN ? 'OPEN' : 'CLOSED');
-
-            this.ws.send(msgData);
-            this.isTyping = true;
-            this.pendingContent = '';
-            this.pendingThinking = '';
-            this.showTypingIndicator();
-            this.setConnected(this.isConnected);
-        } catch (error) {
-            console.error('❌ [Gateway] 发送消息失败:', error);
-            this.addAgentMessage('❌ 发送消息失败，请检查连接');
+        // Escape 关闭菜单
+        if (e.key === 'Escape') {
+          this.hideMentionMenu();
         }
+      });
 
-        // 清空输入框和待发送图片
-        this.messageInput.value = '';
-        this.messageInput.style.height = 'auto';
-        this.messageInput.focus();
-        this.clearPendingImages();
-    }
+      elements.groupMessageInput.addEventListener('input', (e) => {
+        elements.groupMessageInput.style.height = 'auto';
+        elements.groupMessageInput.style.height = Math.min(elements.groupMessageInput.scrollHeight, 200) + 'px';
 
-    // 处理图片上传
-    handleImageUpload(event) {
-        const files = Array.from(event.target.files);
-        if (files.length === 0) return;
+        // 检测 @输入
+        const value = e.target.value;
+        const cursorPos = e.target.selectionStart;
+        const textBeforeCursor = value.substring(0, cursorPos);
+        const lastAt = textBeforeCursor.lastIndexOf('@');
 
-        const container = document.getElementById('imagePreviewContainer');
-        const list = document.getElementById('imagePreviewList');
-
-        files.forEach(file => {
-            if (!file.type.startsWith('image/')) return;
-            if (file.size > 10 * 1024 * 1024) {
-                alert('图片大小不能超过 10MB');
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const dataUrl = e.target.result;
-                this.pendingImages.push(dataUrl);
-
-                // 添加预览
-                const preview = document.createElement('div');
-                preview.className = 'position-relative d-inline-block';
-                preview.innerHTML = `
-                    <img src="${dataUrl}" style="height:60px;border-radius:4px;" class="border">
-                    <button class="btn btn-sm btn-danger position-absolute top-0 end-0 p-0 lh-1"
-                            style="width:18px;height:18px;font-size:10px;border-radius:50%;"
-                            onclick="window.chat.removePendingImage(${this.pendingImages.length - 1}, this.parentElement)">
-                        <i class="bi bi-x"></i>
-                    </button>
-                `;
-                list.appendChild(preview);
-                container.classList.remove('d-none');
-            };
-            reader.readAsDataURL(file);
-        });
-
-        // 清空 input 允许重复选择同一文件
-        event.target.value = '';
-    }
-
-    // 移除待发送图片
-    removePendingImage(index, element) {
-        this.pendingImages.splice(index, 1);
-        element.remove();
-        if (this.pendingImages.length === 0) {
-            document.getElementById('imagePreviewContainer').classList.add('d-none');
-        }
-        // 重新绑定索引
-        const list = document.getElementById('imagePreviewList');
-        list.querySelectorAll('.position-relative').forEach((el, i) => {
-            const btn = el.querySelector('button');
-            if (btn) {
-                btn.setAttribute('onclick', `window.chat.removePendingImage(${i}, this.parentElement)`);
-            }
-        });
-    }
-
-    // 清空待发送图片
-    clearPendingImages() {
-        this.pendingImages = [];
-        const list = document.getElementById('imagePreviewList');
-        if (list) list.innerHTML = '';
-        const container = document.getElementById('imagePreviewContainer');
-        if (container) container.classList.add('d-none');
-    }
-    
-    // 添加用户消息
-    addUserMessage(content, images = null) {
-        const message = {
-            id: this.generateUUID(),
-            role: 'user',
-            content: content,
-            images: images,
-            markdown: true,
-            timestamp: new Date()
-        };
-
-        this.messages.push(message);
-        this.renderMessage(message);
-        this.saveMessages();
-        this.scrollToBottom();
-    }
-    
-    // 添加 Agent 消息
-    addAgentMessage(content, thinking = null) {
-        const message = {
-            id: this.generateUUID(),
-            role: 'agent',
-            content: content,
-            thinking: thinking,
-            markdown: true,
-            timestamp: new Date()
-        };
-        
-        this.messages.push(message);
-        this.renderMessage(message);
-        this.saveMessages();
-        this.scrollToBottom();
-    }
-    
-    // 添加工具调用消息
-    addToolCallMessage(name, args) {
-        const message = {
-            id: this.generateUUID(),
-            role: 'agent',
-            content: `🔧 调用工具: ${name}`,
-            toolCall: {
-                name: name,
-                args: args,
-                output: undefined
-            },
-            timestamp: new Date()
-        };
-        
-        this.messages.push(message);
-        this.renderToolCallMessage(message);
-        this.saveMessages();
-        this.scrollToBottom();
-    }
-    
-    // 更新工具调用输出
-    updateToolCallOutput(output) {
-        // 找到最后一个未完成的工具调用
-        const lastToolMsg = [...this.messages].reverse().find(m => m.toolCall && m.toolCall.output === undefined);
-        if (lastToolMsg) {
-            lastToolMsg.toolCall.output = output;
-            this.updateToolCallElement(lastToolMsg.id, output);
-            this.saveMessages();
-            
-            // 工具结果更新后，滚动到底部
-            this.scrollToBottom();
-        }
-    }
-    
-    // 在前端执行 shell 命令（通过后端 API 代理）
-    async executeShellCommand(command) {
-        console.log('🔧 [前端] 执行 shell 命令:', command);
-        
-        try {
-            // 调用后端 API 执行命令
-            const response = await fetch('/api/execute', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'X-Session-Id': this.verifiedSessionId || ''
-                },
-                body: JSON.stringify({ command })
-            });
-            
-            const result = await response.json();
-            
-            if (result.success) {
-                console.log('✅ [前端] 命令执行成功');
-                console.log('   输出长度:', result.output?.length || 0, '字符');
-                this.updateToolCallOutput(result.output || '执行成功，无输出');
-                
-                // 创建最终回复消息
-                const replyMsg = {
-                    id: this.generateUUID(),
-                    role: 'agent',
-                    content: `命令执行完成。\\n\\n\`\`\`\\n${result.output}\\n\`\`\``,
-                    markdown: true,
-                    timestamp: new Date()
-                };
-                this.messages.push(replyMsg);
-                this.renderMessage(replyMsg);
-                this.saveMessages();
-            } else {
-                console.error('❌ [前端] 命令执行失败:', result.error);
-                this.updateToolCallOutput('执行失败: ' + (result.error || '未知错误'));
-            }
-        } catch (error) {
-            console.error('❌ [前端] 执行命令异常:', error);
-            this.updateToolCallOutput('执行异常: ' + error.message);
-        }
-        
-        this.scrollToBottom();
-    }
-    
-    // 处理所有工具调用完成后的最终显示
-    finalizeToolCalls() {
-        // 检查是否有未显示的工具调用结果
-        const lastToolMsg = [...this.messages].reverse().find(m => m.toolCall && m.toolCall.output);
-        if (lastToolMsg && lastToolMsg.toolCall.output) {
-            // 如果工具结果很长，可以创建额外的消息显示
-            const output = lastToolMsg.toolCall.output;
-            if (output.length > 500) {
-                // 如果结果很长，创建单独的摘要消息
-                const summaryMsg = {
-                    id: this.generateUUID(),
-                    role: 'agent',
-                    content: `工具 \`${lastToolMsg.toolCall.name}\` 执行完成，输出 ${output.length} 字符。`,
-                    markdown: true,
-                    timestamp: new Date()
-                };
-                this.messages.push(summaryMsg);
-                this.renderMessage(summaryMsg);
-                this.saveMessages();
-            }
-        }
-        this.scrollToBottom();
-    }
-    
-    // 更新流式内容显示
-    updateStreaming() {
-        this.streamingContent = this.pendingContent;
-        this.streamingThinking = this.pendingThinking;
-        this.updateStreamingMessage();
-    }
-    
-    // 显示流式消息
-    updateStreamingMessage() {
-        let streamingEl = document.getElementById('streaming-message');
-        
-        if (!streamingEl) {
-            streamingEl = document.createElement('div');
-            streamingEl.id = 'streaming-message';
-            streamingEl.className = 'message agent';
-            streamingEl.innerHTML = `
-                <div class="message-avatar">
-                    <i class="bi bi-robot"></i>
-                </div>
-                <div class="message-content streaming-content">
-                    <div class="thinking-section streaming-thinking" style="display: none;">
-                        <div class="thinking-content"></div>
-                    </div>
-                    <div class="content-text"></div>
-                </div>
-            `;
-            this.messagesWrapper.appendChild(streamingEl);
-        }
-        
-        const thinkingSection = streamingEl.querySelector('.thinking-section');
-        const thinkingContent = streamingEl.querySelector('.thinking-content');
-        const contentText = streamingEl.querySelector('.content-text');
-        
-        if (this.streamingThinking) {
-            thinkingSection.style.display = 'block';
-            thinkingContent.textContent = this.streamingThinking;
-        } else {
-            thinkingSection.style.display = 'none';
-        }
-        
-        if (this.streamingContent) {
-            contentText.innerHTML = this.renderMarkdownSafe(this.streamingContent);
-        } else {
-            contentText.innerHTML = '<div class="typing-indicator" aria-live="polite" aria-label="正在等待回复"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div><span class="ms-2 text-muted">正在等待回复...</span></div>';
-        }
-        
-        this.scrollToBottom();
-    }
-    
-    // 移除流式消息
-    removeStreamingMessage() {
-        const streamingEl = document.getElementById('streaming-message');
-        if (streamingEl) {
-            streamingEl.remove();
-        }
-    }
-    
-    // 显示打字指示器
-    showTypingIndicator() {
-        this.updateStreamingMessage();
-    }
-    
-    // 渲染消息
-    renderMessage(message) {
-        // 隐藏欢迎消息
-        if (this.welcomeMessage) {
-            this.welcomeMessage.style.display = 'none';
-        }
-        
-        const messageEl = document.createElement('div');
-        messageEl.className = `message ${message.role}`;
-        messageEl.dataset.messageId = message.id;
-        
-        const avatarIcon = message.role === 'user' ? 'bi-person' : 'bi-robot';
-        const timeStr = message.timestamp.toLocaleTimeString();
-        
-        let contentHtml = '';
-        
-        // 思考过程
-        if (message.thinking) {
-            contentHtml += `
-                <div class="thinking-section">
-                    <div class="thinking-summary" data-bs-toggle="collapse" data-bs-target="#thinking-${message.id}">
-                        <i class="bi bi-lightbulb"></i>
-                        <span>思考过程</span>
-                        <i class="bi bi-chevron-down ms-auto"></i>
-                    </div>
-                    <div id="thinking-${message.id}" class="collapse">
-                        <div class="thinking-content">${this.escapeHtml(message.thinking)}</div>
-                    </div>
-                </div>
-            `;
-        }
-        
-        // 工具调用
-        if (message.toolCall) {
-            contentHtml += this.renderToolCall(message.toolCall);
-        } else if (message.markdown) {
-            // Markdown 渲染
-            contentHtml += `<div class="content-text">${this.renderMarkdownSafe(message.content)}</div>`;
-        } else {
-            // 纯文本
-            contentHtml += `<div class="content-text">${this.escapeHtml(message.content)}</div>`;
-        }
-        
-        messageEl.innerHTML = `
-            <div class="message-avatar">
-                <i class="bi ${avatarIcon}"></i>
-            </div>
-            <div class="message-content">
-                ${contentHtml}
-                <div class="message-time">${timeStr}</div>
-            </div>
-        `;
-        
-        this.messagesWrapper.appendChild(messageEl);
-        this.scrollToBottom();
-    }
-    
-    // 渲染工具调用
-    renderToolCall(toolCall) {
-        let html = `
-            <div class="tool-call-card">
-                <div class="tool-call-header">
-                    <i class="bi bi-wrench-adjustable"></i>
-                    <span>${this.escapeHtml(toolCall.name || 'unknown')}</span>
-                </div>
-                <details class="tool-call-args-details">
-                    <summary>参数</summary>
-                    <div class="tool-call-args">${this.escapeHtml(JSON.stringify(toolCall.args || {}, null, 2))}</div>
-                </details>
-        `;
-
-        if (toolCall.output !== undefined && toolCall.output !== '') {
-            const output = toolCall.output;
-            const previewLength = 300;
-            const preview = output.substring(0, previewLength);
-            const isLong = output.length > previewLength;
-            
-            html += `<details class="tool-call-output-details" ${isLong ? '' : 'open'}>
-                <summary>输出结果 (${output.length} 字符)</summary>
-                <div class="tool-call-output">${this.escapeHtml(output)}</div>
-            </details>`;
-        } else if (toolCall.output === undefined) {
-            html += `<div class="tool-call-output"><i class="bi bi-hourglass-split"></i> 执行中...</div>`;
-        }
-
-        html += '</div>';
-        return html;
-    }
-    
-    // 渲染工具调用消息
-    renderToolCallMessage(message) {
-        this.renderMessage(message);
-    }
-    
-    // 更新工具调用元素
-    updateToolCallElement(messageId, output) {
-        const messageEl = this.messagesWrapper.querySelector(`[data-message-id="${messageId}"]`);
-        if (messageEl) {
-            const outputEl = messageEl.querySelector('.tool-call-output');
-            if (outputEl) {
-                outputEl.innerHTML = this.escapeHtml(output.substring(0, 200)) + (output.length > 200 ? '...' : '');
-            }
-        }
-    }
-    
-    // 清空消息
-    clearMessages() {
-        this.messages = [];
-        localStorage.removeItem(`zeroclaw_messages_${this.sessionId}`);
-
-        // 清空 DOM
-        const messageEls = this.messagesWrapper.querySelectorAll('.message');
-        messageEls.forEach(el => el.remove());
-
-        if (this.welcomeMessage) {
-            this.welcomeMessage.style.display = 'flex';
-        }
-        this.schedulePersistSessionRecord(true);
-    }
-
-    createNewChat() {
-        this.persistSessionRecord().then(() => {
-            this.messages = [];
-            this.sessionId = this.generateUUID();
-            sessionStorage.setItem('zeroclaw_session_id', this.sessionId);
-            this.renderAllMessages();
-            this.connect();
-            console.log('已创建新会话:', this.sessionId);
-        });
-    }
-
-    renderAllMessages() {
-        const messageEls = this.messagesWrapper.querySelectorAll('.message');
-        messageEls.forEach(el => el.remove());
-
-        if (this.messages.length > 0) {
-            if (this.welcomeMessage) {
-                this.welcomeMessage.style.display = 'none';
-            }
-            this.messages.forEach(msg => this.renderMessage(msg));
-        } else if (this.welcomeMessage) {
-            this.welcomeMessage.style.display = 'flex';
-        }
-    }
-    
-    // 滚动到底部
-    scrollToBottom() {
-        const container = document.getElementById('messagesContainer');
-        setTimeout(() => {
-            container.scrollTop = container.scrollHeight;
-        }, 100);
-    }
-    
-    // 保存消息到 localStorage
-    saveMessages() {
-        try {
-            localStorage.setItem(`zeroclaw_messages_${this.sessionId}`, JSON.stringify(this.messages));
-            this.schedulePersistSessionRecord();
-        } catch (error) {
-            console.error('保存消息失败:', error);
-        }
-    }
-    
-    // 从 localStorage 加载消息
-    loadMessages() {
-        try {
-            const storageKey = `zeroclaw_messages_${this.sessionId}`;
-            console.log('📂 [加载] 从 localStorage 加载消息...', { storageKey });
-            const saved = localStorage.getItem(storageKey);
-            if (saved) {
-                console.log('📂 [加载] 找到保存的消息');
-                this.messages = JSON.parse(saved).map(msg => ({
-                    ...msg,
-                    timestamp: new Date(msg.timestamp)
-                }));
-                console.log('📂 [加载] 已加载消息数量:', this.messages.length);
-
-                // 重新渲染
-                if (this.messages.length > 0 && this.welcomeMessage) {
-                    this.welcomeMessage.style.display = 'none';
-                }
-
-                this.messages.forEach(msg => this.renderMessage(msg));
-                this.schedulePersistSessionRecord(true);
-            } else {
-                console.log('📂 [加载] 未找到保存的消息');
-            }
-        } catch (error) {
-            console.error('❌ [加载] 加载消息失败:', error);
-        }
-    }
-
-    getAuthHeaders() {
-        return {
-            'Content-Type': 'application/json',
-            'X-Session-Id': this.verifiedSessionId || ''
-        };
-    }
-
-    schedulePersistSessionRecord(force = false) {
-        if (!this.verifiedSessionId) return;
-        if (this.persistTimer) {
-            clearTimeout(this.persistTimer);
-        }
-        const delay = force ? 0 : 800;
-        this.persistTimer = setTimeout(() => {
-            this.persistSessionRecord();
-        }, delay);
-    }
-
-    async persistSessionRecord() {
-        if (!this.verifiedSessionId) {
-            console.warn('⚠️ [持久化] 无法保存: verifiedSessionId 为空');
+        if (lastAt >= 0) {
+          // 检查 @后面是否还有空格（表示已经选择了助手）
+          const textAfterAt = textBeforeCursor.substring(lastAt + 1);
+          if (!textAfterAt.includes(' ')) {
+            // 正在输入 @助手名，显示菜单
+            this.showMentionMenu();
             return;
-        }
-        if (!this.sessionId) {
-            console.warn('⚠️ [持久化] 无法保存: sessionId 为空');
-            return;
-        }
-        if (!Array.isArray(this.messages) || this.messages.length === 0) {
-            console.warn('⚠️ [持久化] 无法保存: messages 为空或非数组');
-            return;
+          }
         }
 
-        try {
-            console.log('💾 [持久化] 保存会话记录...', {
-                sessionId: this.sessionId,
-                messageCount: this.messages.length
-            });
-            const response = await fetch('/api/sessions/save', {
-                method: 'POST',
-                headers: this.getAuthHeaders(),
-                body: JSON.stringify({
-                    sessionId: this.sessionId,
-                    messages: this.messages
-                })
-            });
-            const result = await response.json();
-            if (result.success) {
-                console.log('✅ [持久化] 会话记录已保存', {
-                    fileName: result.fileName,
-                    size: result.size
-                });
-            } else {
-                console.warn('⚠️ [持久化] 保存失败:', result.error);
-            }
-        } catch (error) {
-            console.warn('❌ [持久化] 保存会话记录失败:', error.message);
+        // 隐藏菜单
+        this.hideMentionMenu();
+      });
+
+      // 点击其他地方关闭菜单
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('#mentionMenu') && !e.target.closest('#groupMessageInput')) {
+          this.hideMentionMenu();
         }
+      });
     }
 
-    async openHistoryModal() {
-        await this.persistSessionRecord();
-        await this.refreshHistorySessions(true);
-        if (this.historyModalInstance) {
-            this.historyModalInstance.show();
+    if (elements.groupSendBtn) {
+      elements.groupSendBtn.addEventListener('click', () => {
+        const content = elements.groupMessageInput.value.trim();
+        if (content) {
+          this.sendGroupMessage(content);
+          elements.groupMessageInput.value = '';
+          elements.groupMessageInput.style.height = 'auto';
         }
+      });
     }
 
-    async downloadSessionRecord(sessionId) {
-        if (!this.verifiedSessionId || !sessionId) {
-            alert('请选择可下载的会话。');
-            return;
+    // 助手设置
+    if (elements.assistantSettingsBtn) {
+      elements.assistantSettingsBtn.addEventListener('click', () => this.showAssistantSettings());
+    }
+    if (elements.assistantSettingsClose) {
+      elements.assistantSettingsClose.addEventListener('click', () => this.hideAssistantSettings());
+    }
+    if (elements.addAssistantBtn) {
+      elements.addAssistantBtn.addEventListener('click', () => this.addAssistant());
+    }
+
+    // 新建会话
+    elements.newChatBtn.addEventListener('click', () => this.newChat());
+
+    // 历史记录
+    elements.historyBtn.addEventListener('click', () => this.loadHistory());
+    elements.historyModalClose.addEventListener('click', () => {
+      elements.historyModal.style.display = 'none';
+    });
+    elements.historySessionSelect.addEventListener('change', (e) => {
+      this.loadSession(e.target.value);
+    });
+    elements.historyResumeBtn.addEventListener('click', () => this.resumeSession());
+    elements.historyDeleteBtn.addEventListener('click', () => this.deleteSession());
+    elements.refreshHistoryBtn.addEventListener('click', () => this.loadHistory());
+
+    // 主题切换
+    elements.themeToggleBtn.addEventListener('click', () => this.toggleTheme());
+    elements.themeSelect.addEventListener('change', (e) => {
+      this.setTheme(e.target.value);
+    });
+
+    // 搜索
+    elements.searchBtn.addEventListener('click', () => this.toggleSearch());
+    elements.searchClose.addEventListener('click', () => this.toggleSearch());
+    elements.searchInput.addEventListener('input', (e) => {
+      this.searchMessages(e.target.value);
+    });
+
+    // 图片上传
+    elements.imageUploadBtn.addEventListener('click', () => {
+      elements.imageUploadInput.click();
+    });
+    elements.imageUploadInput.addEventListener('change', async (e) => {
+      await this.handleImageSelect(e.target.files);
+    });
+
+    // 图片预览容器
+    this.imagePreviewContainer = document.getElementById('imagePreviewContainer');
+    this.imagePreviewList = document.getElementById('imagePreviewList');
+
+    // 贴纸
+    elements.stickerToggleBtn.addEventListener('click', () => this.toggleStickerPanel());
+    elements.stickerUploadBtn.addEventListener('click', () => {
+      elements.stickerUploadInput.click();
+    });
+    elements.stickerUploadInput.addEventListener('change', (e) => {
+      this.handleStickerUpload(e.target.files);
+    });
+
+    // 加载贴纸列表
+    this.loadStickers();
+
+    // 控制台
+    elements.consoleSendBtn.addEventListener('click', () => {
+      const command = elements.consoleInput.value.trim();
+      if (command) {
+        this.executeCommand(command);
+        elements.consoleInput.value = '';
+      }
+    });
+
+    elements.consoleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        elements.consoleSendBtn.click();
+      }
+    });
+
+    // 控制台快捷按钮
+    document.querySelectorAll('.shortcut-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        elements.consoleInput.value = btn.dataset.cmd;
+        elements.consoleInput.focus();
+      });
+    });
+
+    // 记忆
+    elements.addMemoryBtn.addEventListener('click', () => {
+      this.createMemory();
+    });
+
+    // 文档
+    elements.addDocumentBtn.addEventListener('click', () => {
+      this.createDocument();
+    });
+
+    // 设置
+    elements.userNameInput.addEventListener('change', () => this.saveSettings());
+    elements.assistantNameInput.addEventListener('change', () => this.saveSettings());
+    elements.themeSelect.addEventListener('change', (e) => {
+      this.setTheme(e.target.value);
+      this.saveSettings();
+    });
+    elements.notificationsToggle.addEventListener('change', async (e) => {
+      if (e.target.checked) {
+        const granted = await this.requestNotificationPermission();
+        if (!granted) {
+          e.target.checked = false;
+          alert('请在浏览器设置中允许通知权限');
+          return;
         }
+      }
+      this.saveSettings();
+    });
 
-        try {
-            await this.persistSessionRecord();
-            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-                method: 'GET',
-                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
-            });
-            const result = await response.json();
-            if (!result.success) {
-                throw new Error(result.error || '下载会话失败');
-            }
+    // 灯箱
+    elements.lightboxClose.addEventListener('click', () => this.closeLightbox());
+    elements.lightbox.addEventListener('click', (e) => {
+      if (e.target === elements.lightbox || e.target.classList.contains('lightbox-overlay')) {
+        this.closeLightbox();
+      }
+    });
 
-            const fileName = result.fileName || `${sessionId}.md`;
-            this.downloadTextFile(fileName, result.content || '');
-        } catch (error) {
-            console.error('下载会话失败:', error);
-            alert('下载会话失败，请稍后重试。');
+    // 键盘快捷键
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.closeLightbox();
+        if (this.elements.historyModal.style.display === 'flex') {
+          this.elements.historyModal.style.display = 'none';
         }
-    }
-
-    async resumeSession(sessionId) {
-        if (!this.verifiedSessionId || !sessionId) return;
-
-        try {
-            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
-            });
-            const result = await response.json();
-            if (!result.success) {
-                throw new Error(result.error || '读取会话失败');
-            }
-
-            this.sessionId = sessionId;
-            localStorage.setItem('zeroclaw_session_id', sessionId);
-
-            if (Array.isArray(result.messages) && result.messages.length > 0) {
-                this.messages = result.messages.map(msg => ({
-                    ...msg,
-                    timestamp: new Date(msg.timestamp)
-                }));
-            } else {
-                this.messages = [];
-            }
-            localStorage.setItem(`zeroclaw_messages_${sessionId}`, JSON.stringify(this.messages));
-            this.renderAllMessages();
-
-            if (this.historyModalInstance) {
-                this.historyModalInstance.hide();
-            }
-            this.connect();
-            console.log('已切换到会话:', sessionId);
-        } catch (error) {
-            console.error('切换会话失败:', error);
-            alert('切换会话失败，请稍后重试。');
+        if (this.elements.searchBar.style.display !== 'none') {
+          this.toggleSearch();
         }
-    }
-
-    async deleteSession(sessionId) {
-        if (!this.verifiedSessionId || !sessionId) return;
-
-        try {
-            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-                method: 'DELETE',
-                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
-            });
-            const result = await response.json();
-            if (!result.success) {
-                throw new Error(result.error || '删除失败');
-            }
-
-            localStorage.removeItem(`zeroclaw_messages_${sessionId}`);
-            await this.refreshHistorySessions();
-            console.log('已删除会话:', sessionId);
-        } catch (error) {
-            console.error('删除会话失败:', error);
-            alert('删除会话失败，请稍后重试。');
-        }
-    }
-
-    async refreshHistorySessions(selectCurrentSession = false) {
-        if (!this.verifiedSessionId || !this.historySessionSelect) return;
-
-        try {
-            const response = await fetch('/api/sessions', {
-                method: 'GET',
-                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
-            });
-            const result = await response.json();
-            if (!result.success || !Array.isArray(result.sessions)) {
-                throw new Error(result.error || '加载会话失败');
-            }
-
-            this.historyCache = result.sessions;
-            this.historySessionSelect.innerHTML = '<option value="">请选择会话</option>';
-
-            result.sessions.forEach((session) => {
-                const option = document.createElement('option');
-                option.value = session.sessionId;
-                option.textContent = `${session.sessionId} (${this.formatDateTime(session.updatedAt)})`;
-                this.historySessionSelect.appendChild(option);
-            });
-
-            if (result.sessions.length === 0) {
-                this.historyMeta.textContent = '';
-                this.historyPreview.textContent = '暂无会话记录';
-                return;
-            }
-
-            const preferredSessionId = selectCurrentSession ? this.sessionId : this.historySessionSelect.value;
-            const targetSession = result.sessions.find((item) => item.sessionId === preferredSessionId) || result.sessions[0];
-            this.historySessionSelect.value = targetSession.sessionId;
-            await this.loadHistorySession(targetSession.sessionId);
-        } catch (error) {
-            console.error('加载会话列表失败:', error);
-            this.historyMeta.textContent = '';
-            this.historyPreview.textContent = '加载会话记录失败';
-        }
-    }
-
-    async loadHistorySession(sessionId) {
-        if (!this.verifiedSessionId || !sessionId) return;
-        try {
-            const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-                method: 'GET',
-                headers: { 'X-Session-Id': this.verifiedSessionId || '' }
-            });
-            const result = await response.json();
-            if (!result.success) {
-                throw new Error(result.error || '读取会话记录失败');
-            }
-
-            this.historyPreview.textContent = result.content || '';
-            const sizeText = this.historyCache.find((item) => item.sessionId === sessionId)?.size;
-            this.historyMeta.textContent = `会话: ${sessionId} | 更新时间: ${this.formatDateTime(result.updatedAt)}${typeof sizeText === 'number' ? ` | 文件大小: ${sizeText} bytes` : ''}`;
-        } catch (error) {
-            console.error('读取会话内容失败:', error);
-            this.historyMeta.textContent = '';
-            this.historyPreview.textContent = '读取会话记录失败';
-        }
-    }
-
-    downloadTextFile(fileName, content) {
-        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-        const downloadUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(downloadUrl);
-    }
-    
-    // HTML 转义
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text ?? '';
-        return div.innerHTML;
-    }
-
-    // 安全 Markdown 渲染：先转义 HTML，再交由 marked 处理 markdown 语法
-    renderMarkdownSafe(text) {
-        return marked.parse(this.escapeHtml(text));
-    }
+      }
+    });
+  }
 }
 
 // 初始化应用
-document.addEventListener('DOMContentLoaded', () => {
-    window.chat = new ZeroClawChat();
-});
+const app = new ClawAgent();
+
+// 导出供全局使用
+window.app = app;
+
+// 注册 Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(registration => {
+        console.log('✅ Service Worker 注册成功:', registration.scope);
+      })
+      .catch(error => {
+        console.warn('⚠️ Service Worker 注册失败:', error);
+      });
+  });
+}

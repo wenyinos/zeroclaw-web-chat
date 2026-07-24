@@ -2,192 +2,483 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#6fb1ff">
     <meta name="robots" content="noindex, nofollow">
     <title>Claw Agent</title>
-    <link rel="icon" href="favicon/favicon.ico" type="image/x-icon">
-    <link rel="apple-touch-icon" href="favicon/apple-touch-icon.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="favicon/favicon-16x16.png">
-    <link rel="icon" type="image/png" sizes="32x32" href="favicon/favicon-32x32.png">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link href="css/style.css" rel="stylesheet">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" href="/favicon/favicon.ico" type="image/x-icon">
+    <link rel="apple-touch-icon" href="/favicon/apple-touch-icon.png">
+    <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-    <!-- 密钥验证界面 -->
-    <div class="auth-container" id="authContainer">
-        <div class="auth-card">
-            <div class="auth-header">
-                <div class="lock-icon">
-                    <i class="bi bi-shield-lock"></i>
-                </div>
-                <h4>访问验证</h4>
-                <p class="text-muted">请输入访问密钥以继续使用</p>
-            </div>
-            <div class="auth-body">
-                <form id="authForm" onsubmit="return false;">
-                    <div class="mb-3">
-                        <input 
-                            type="password" 
-                            class="form-control" 
-                            id="accessKeyInput" 
-                            placeholder="输入访问密钥"
-                            autocomplete="off"
-                            required
-                        >
-                    </div>
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" id="rememberKey">
-                        <label class="form-check-label text-muted small" for="rememberKey">
-                            记住密钥（下次自动登录）
-                        </label>
-                    </div>
-                    <div class="alert alert-danger d-none" id="authError" role="alert">
-                        <i class="bi bi-exclamation-triangle me-1"></i>密钥错误，请重试
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100" id="authSubmitBtn">
-                        <i class="bi bi-unlock me-1"></i>验证并进入
-                    </button>
-                </form>
-            </div>
-            <div class="auth-footer">
-                <small class="text-muted">
-                    <i class="bi bi-info-circle me-1"></i>
-                    需要密钥？请联系管理员获取
-                </small>
-            </div>
-        </div>
-    </div>
+    <!-- 应用容器 -->
+    <div id="app" class="app-shell">
+        <!-- 加载屏幕 -->
+        <main class="loading-screen" id="loadingScreen">
+            <div class="loading-title">Claw Agent</div>
+            <div class="loading-subtitle">正在加载...</div>
+        </main>
 
-    <!-- 聊天界面（默认隐藏） -->
-    <div class="chat-container d-none" id="chatContainer">
-        <!-- 头部 -->
-        <header class="chat-header">
-            <div class="container-fluid px-4 py-3">
-                <div class="d-flex align-items-center justify-content-between">
-                    <div class="d-flex align-items-center gap-3">
-                        <div class="bot-avatar small">
-                            <i class="bi bi-robot"></i>
-                        </div>
-                        <div>
-                            <h5 class="mb-0">Claw Agent</h5>
+        <!-- 主应用界面（认证后显示） -->
+        <div class="app-main" id="appMain" style="display: none;">
+            <!-- 桌面端侧边栏 -->
+            <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <span class="brand-icon">🐾</span>
+                    <span class="brand-text">Claw Agent</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-btn active" data-tab="chat">
+                    <span class="nav-icon">💬</span>
+                    <span class="nav-label">私聊</span>
+                </button>
+                <button class="nav-btn" data-tab="group">
+                    <span class="nav-icon">👥</span>
+                    <span class="nav-label">群聊</span>
+                </button>
+                <button class="nav-btn" data-tab="console">
+                    <span class="nav-icon">📋</span>
+                    <span class="nav-label">控制台</span>
+                </button>
+                <button class="nav-btn" data-tab="memory">
+                    <span class="nav-icon">🧠</span>
+                    <span class="nav-label">记忆</span>
+                </button>
+                <button class="nav-btn" data-tab="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-label">设置</span>
+                </button>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar">W</div>
+                    <span class="user-name">Wenyin</span>
+                </div>
+                <button class="btn-icon" id="logoutBtn" title="退出登录">
+                    🚪
+                </button>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content" id="mainContent">
+            <!-- 私聊标签页 -->
+            <div class="tab-panel active" id="tab-chat">
+                <!-- 顶部栏 -->
+                <header class="top-bar">
+                    <div class="top-bar-left">
+                        <div class="avatar assistant-avatar">C</div>
+                        <div class="top-bar-info">
+                            <h1 class="top-bar-title">Claw Agent</h1>
                             <div class="connection-status">
                                 <span class="status-dot" id="statusDot"></span>
-                                <span id="statusText">连接中...</span>
+                                <span class="status-text" id="statusText">连接中...</span>
                             </div>
                         </div>
                     </div>
-                    <div class="header-actions">
-                        <button class="btn btn-sm btn-outline-secondary" id="newChatBtn" title="新建会话">
-                            <i class="bi bi-plus-lg"></i>
+                    <div class="top-bar-actions">
+                        <button class="btn-icon" id="searchBtn" title="搜索">
+                            🔍
                         </button>
-                        <button class="btn btn-sm btn-outline-secondary" id="themeToggleBtn" title="切换主题">
-                            <i class="bi bi-moon-fill"></i>
+                        <button class="btn-icon" id="newChatBtn" title="新建会话">
+                            ➕
                         </button>
-                        <button class="btn btn-sm btn-outline-secondary" id="historyBtn" title="会话记录">
-                            <i class="bi bi-clock-history"></i>
+                        <button class="btn-icon" id="historyBtn" title="会话记录">
+                            📜
                         </button>
-                        <button class="btn btn-sm btn-outline-secondary" id="logoutBtn" title="退出登录">
-                            <i class="bi bi-box-arrow-right"></i>
+                        <button class="btn-icon" id="themeToggleBtn" title="切换主题">
+                            🌙
                         </button>
+                    </div>
+                </header>
+
+                <!-- 搜索栏（默认隐藏） -->
+                <div class="search-bar" id="searchBar" style="display: none;">
+                    <input type="text" class="search-input" id="searchInput" placeholder="搜索消息...">
+                    <span class="search-count" id="searchCount"></span>
+                    <button class="btn-icon search-close" id="searchClose">✕</button>
+                </div>
+
+                <!-- 图片预览区域 -->
+                <div class="image-preview-container" id="imagePreviewContainer">
+                    <div class="image-preview-list" id="imagePreviewList"></div>
+                </div>
+
+                <!-- 消息列表 -->
+                <div class="messages-container" id="messagesContainer">
+                    <div class="messages-wrapper" id="messagesWrapper">
+                        <!-- 欢迎消息 -->
+                        <div class="welcome-message" id="welcomeMessage">
+                            <div class="welcome-icon">🐾</div>
+                            <h2>Claw Agent</h2>
+                            <p>开始对话吧！我可以帮您执行任务、回答问题</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 草稿区域 -->
+                <div class="drafts-area" id="draftsArea" style="display: none;"></div>
+
+                <!-- 输入区域 -->
+                <div class="input-area">
+                    <div class="input-wrapper">
+                        <button class="btn-icon input-action" id="imageUploadBtn" title="上传图片" style="display: none;">
+                            🖼️
+                        </button>
+                        <input type="file" id="imageUploadInput" accept="image/*" multiple class="file-input">
+                        <button class="btn-icon input-action" id="stickerToggleBtn" title="贴纸">
+                            😊
+                        </button>
+                        <textarea
+                            id="messageInput"
+                            class="message-input"
+                            rows="1"
+                            placeholder="输入消息..."
+                            disabled
+                        ></textarea>
+                        <button class="send-btn" id="sendBtn" disabled>
+                            <span class="send-icon">↑</span>
+                        </button>
+                    </div>
+
+                    <!-- 贴纸面板 -->
+                    <div class="sticker-panel" id="stickerPanel" style="display: none;">
+                        <div class="sticker-header">
+                            <span>贴纸</span>
+                            <button class="btn-icon" id="stickerUploadBtn" title="上传贴纸">➕</button>
+                            <input type="file" id="stickerUploadInput" accept="image/*" class="file-input">
+                        </div>
+                        <div class="sticker-grid" id="stickerGrid">
+                            <div class="sticker-empty">暂无贴纸</div>
+                        </div>
+                    </div>
+
+                    <div class="input-hint">
+                        <span>Enter 添加草稿 · Ctrl+Enter 发送 · Shift+Enter 换行</span>
                     </div>
                 </div>
             </div>
-        </header>
 
-        <!-- 消息区域 -->
-        <div class="messages-container" id="messagesContainer">
-            <div class="messages-wrapper" id="messagesWrapper">
-                <!-- 欢迎消息 -->
-                <div class="welcome-message" id="welcomeMessage">
-                    <div class="bot-avatar large">
-                        <i class="bi bi-robot"></i>
+            <!-- 群聊标签页 -->
+            <div class="tab-panel" id="tab-group">
+                <header class="top-bar">
+                    <div class="top-bar-left">
+                        <div class="avatar group-avatar">G</div>
+                        <div class="top-bar-info">
+                            <h1 class="top-bar-title">群聊</h1>
+                            <div class="top-bar-subtitle">@提及 AI 触发回复</div>
+                        </div>
                     </div>
-                    <h4>Claw Agent</h4>
-                    <p class="text-muted">开始对话吧！我可以帮您执行任务、回答问题</p>
-                </div>
-                
-                <!-- 消息列表将在这里动态插入 -->
-            </div>
-        </div>
+                    <div class="top-bar-actions">
+                        <button class="btn-icon" id="assistantSettingsBtn" title="助手设置">
+                            ⚙️
+                        </button>
+                        <button class="btn-icon" id="groupSearchBtn" title="搜索">
+                            🔍
+                        </button>
+                        <button class="btn-icon" id="groupClearBtn" title="清空聊天">
+                            🗑️
+                        </button>
+                    </div>
+                </header>
 
-        <!-- 输入区域 -->
-        <div class="input-area">
-            <div class="container-fluid px-4 py-3">
-                <div id="imagePreviewContainer" class="d-none mb-2">
-                    <div class="d-flex flex-wrap gap-2" id="imagePreviewList"></div>
+                <!-- 助手设置模态框 -->
+                <div class="modal-overlay" id="assistantSettingsModal" style="display: none;">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3>助手设置</h3>
+                            <button class="btn-icon modal-close" id="assistantSettingsClose">✕</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="assistant-settings-list" id="assistantSettingsList">
+                                <!-- 动态填充 -->
+                            </div>
+                            <button class="btn-primary-sm" id="addAssistantBtn">
+                                + 添加助手
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div class="input-wrapper">
-                    <button class="btn btn-outline-secondary" id="imageUploadBtn" title="上传图片" style="display:none;">
-                        <i class="bi bi-image"></i>
-                    </button>
-                    <input type="file" id="imageUploadInput" accept="image/*" multiple class="d-none">
-                    <textarea
-                        id="messageInput"
-                        class="form-control"
-                        rows="1"
-                        placeholder="输入消息..."
-                        disabled
-                    ></textarea>
-                    <button class="btn btn-primary" id="sendBtn" disabled>
-                        <i class="bi bi-send-fill"></i>
-                    </button>
+
+                <!-- 助手选择器 -->
+                <div class="assistant-selector" id="assistantSelector">
+                    <div class="assistant-list">
+                        <!-- 动态填充 -->
+                    </div>
                 </div>
-                <div class="text-center mt-2">
-                    <small class="text-muted">按 Enter 发送，Shift+Enter 换行</small>
+
+                <!-- 消息列表 -->
+                <div class="messages-container" id="groupMessagesContainer">
+                    <div class="messages-wrapper">
+                        <div class="welcome-message">
+                            <div class="welcome-icon">👥</div>
+                            <h2>群聊</h2>
+                            <p>使用 @助手名 触发特定助手回复，或直接发送让随机助手回复</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 输入区域 -->
+                <div class="input-area">
+                    <div class="input-wrapper">
+                        <textarea
+                            id="groupMessageInput"
+                            class="message-input"
+                            rows="1"
+                            placeholder="输入消息，@提及助手..."
+                            disabled
+                        ></textarea>
+                        <button class="send-btn" id="groupSendBtn" disabled>
+                            <span class="send-icon">↑</span>
+                        </button>
+                    </div>
+                    <div class="input-hint">
+                        <span>@助手名 触发回复 · Enter 发送</span>
+                    </div>
                 </div>
             </div>
-            <!-- 版权信息 -->
-            <div class="copyright text-center py-3">
-                <div class="container-fluid px-4">
-                    <p class="mb-0 text-muted">
-                        <i class="bi bi-code-slash me-1"></i>
-                        Copyleft © wenyinos 2026 |
-                        <a href="https://github.com/wenyinos/zeroclaw-web-chat" target="_blank" rel="noopener noreferrer" class="github-link">
-                            <i class="bi bi-github me-1"></i>在 GitHub 上查看
-                        </a>
-                        |
-                        <a href="https://github.com/zeroclaw-labs/zeroclaw" target="_blank" rel="noopener noreferrer" class="github-link">
-                            <i class="bi bi-github me-1"></i>ZeroClaw
-                        </a>
-                        |
-                        <a href="https://github.com/sipeed/picoclaw" target="_blank" rel="noopener noreferrer" class="github-link">
-                            <i class="bi bi-github me-1"></i>PicoClaw
-                        </a>
-                    </p>
+
+            <!-- 控制台标签页 -->
+            <div class="tab-panel" id="tab-console">
+                <header class="top-bar">
+                    <div class="top-bar-left">
+                        <div class="avatar console-avatar">📋</div>
+                        <div class="top-bar-info">
+                            <h1 class="top-bar-title">控制台</h1>
+                            <div class="top-bar-subtitle">系统事件与命令</div>
+                        </div>
+                    </div>
+                </header>
+                <div class="console-container">
+                    <div class="console-events" id="consoleEvents">
+                        <div class="empty-state">
+                            <div class="empty-icon">📋</div>
+                            <p>暂无事件</p>
+                        </div>
+                    </div>
+                    <div class="console-input-area">
+                        <div class="console-shortcuts">
+                            <button class="shortcut-btn" data-cmd="/forge">/forge</button>
+                            <button class="shortcut-btn" data-cmd="/help">/help</button>
+                        </div>
+                        <div class="console-input-wrapper">
+                            <input type="text" class="console-input" id="consoleInput" placeholder="输入命令...">
+                            <button class="send-btn" id="consoleSendBtn">
+                                <span class="send-icon">↑</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
+            </div>
+
+            <!-- 记忆标签页 -->
+            <div class="tab-panel" id="tab-memory">
+                <header class="top-bar">
+                    <div class="top-bar-left">
+                        <div class="avatar memory-avatar">🧠</div>
+                        <div class="top-bar-info">
+                            <h1 class="top-bar-title">记忆</h1>
+                            <div class="top-bar-subtitle">日记与知识库</div>
+                        </div>
+                    </div>
+                    <div class="top-bar-actions">
+                        <button class="btn-primary-sm" id="addMemoryBtn">
+                            + 新建记忆
+                        </button>
+                        <button class="btn-secondary-sm" id="addDocumentBtn">
+                            + 上传文档
+                        </button>
+                    </div>
+                </header>
+                <div class="memory-container">
+                    <!-- 记忆部分 -->
+                    <div class="memory-section">
+                        <div class="section-header">
+                            <h3>记忆日记</h3>
+                        </div>
+                        <div class="memory-search">
+                            <input type="text" class="search-input" id="memorySearchInput" placeholder="搜索记忆...">
+                        </div>
+                        <div class="memory-list" id="memoryList">
+                            <div class="empty-state">
+                                <div class="empty-icon">🧠</div>
+                                <p>暂无记忆</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 文档部分 -->
+                    <div class="memory-section">
+                        <div class="section-header">
+                            <h3>参考文档</h3>
+                        </div>
+                        <div class="document-list" id="documentList">
+                            <div class="empty-state">
+                                <div class="empty-icon">📄</div>
+                                <p>暂无文档</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 设置标签页 -->
+            <div class="tab-panel" id="tab-settings">
+                <header class="top-bar">
+                    <div class="top-bar-left">
+                        <div class="avatar settings-avatar">⚙️</div>
+                        <div class="top-bar-info">
+                            <h1 class="top-bar-title">设置</h1>
+                            <div class="top-bar-subtitle">应用配置</div>
+                        </div>
+                    </div>
+                </header>
+                <div class="settings-container">
+                    <div class="settings-section">
+                        <h3 class="settings-title">个人信息</h3>
+                        <div class="settings-group">
+                            <label class="settings-label">
+                                <span>用户名</span>
+                                <input type="text" class="settings-input" id="userNameInput" value="Wenyin">
+                            </label>
+                            <label class="settings-label">
+                                <span>助手名称</span>
+                                <input type="text" class="settings-input" id="assistantNameInput" value="Claw Agent">
+                            </label>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3 class="settings-title">外观</h3>
+                        <div class="settings-group">
+                            <label class="settings-label">
+                                <span>主题</span>
+                                <select class="settings-select" id="themeSelect">
+                                    <option value="light">浅色</option>
+                                    <option value="dark">深色</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3 class="settings-title">通知</h3>
+                        <div class="settings-group">
+                            <label class="settings-toggle">
+                                <span>浏览器通知</span>
+                                <input type="checkbox" id="notificationsToggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="settings-section">
+                        <h3 class="settings-title">关于</h3>
+                        <div class="settings-about">
+                            <p>Claw Agent v1.0.0</p>
+                            <p>
+                                <a href="https://github.com/wenyinos/zeroclaw-web-chat" target="_blank" rel="noopener noreferrer">
+                                    GitHub 仓库
+                                </a>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 移动端底部标签栏 -->
+        <nav class="mobile-tabs" id="mobileTabs">
+            <button class="mobile-tab active" data-tab="chat">
+                <span class="mobile-tab-icon">💬</span>
+                <span class="mobile-tab-label">私聊</span>
+            </button>
+            <button class="mobile-tab" data-tab="group">
+                <span class="mobile-tab-icon">👥</span>
+                <span class="mobile-tab-label">群聊</span>
+            </button>
+            <button class="mobile-tab" data-tab="console">
+                <span class="mobile-tab-icon">📋</span>
+                <span class="mobile-tab-label">控制台</span>
+            </button>
+            <button class="mobile-tab" data-tab="memory">
+                <span class="mobile-tab-icon">🧠</span>
+                <span class="mobile-tab-label">记忆</span>
+            </button>
+            <button class="mobile-tab" data-tab="settings">
+                <span class="mobile-tab-icon">⚙️</span>
+                <span class="mobile-tab-label">设置</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- 认证模态框（默认显示） -->
+    <div class="auth-overlay" id="authOverlay">
+        <div class="auth-card">
+            <div class="auth-icon">🔐</div>
+            <h2 class="auth-title">访问验证</h2>
+            <p class="auth-subtitle">请输入访问密钥以继续使用</p>
+            <form id="authForm" class="auth-form">
+                <input
+                    type="password"
+                    class="auth-input"
+                    id="accessKeyInput"
+                    placeholder="输入访问密钥"
+                    autocomplete="off"
+                    required
+                >
+                <label class="auth-checkbox">
+                    <input type="checkbox" id="rememberKey">
+                    <span>记住密钥（下次自动登录）</span>
+                </label>
+                <div class="auth-error" id="authError">密钥错误，请重试</div>
+                <button type="submit" class="auth-submit" id="authSubmitBtn">
+                    验证并进入
+                </button>
+            </form>
+            <div class="auth-footer">
+                <small>需要密钥？请联系管理员获取</small>
             </div>
         </div>
     </div>
+</div>
 
     <!-- 会话记录模态框 -->
-    <div class="modal fade" id="historyModal" tabindex="-1">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">会话记录（Markdown）</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+    <div class="modal-overlay" id="historyModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>会话记录</h3>
+                <button class="btn-icon modal-close" id="historyModalClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="history-controls">
+                    <select class="history-select" id="historySessionSelect">
+                        <option value="">请选择会话</option>
+                    </select>
+                    <button class="btn-secondary-sm" id="refreshHistoryBtn">刷新</button>
+                    <button class="btn-secondary-sm" id="historyDownloadBtn">下载</button>
+                    <button class="btn-primary-sm" id="historyResumeBtn">继续聊天</button>
+                    <button class="btn-danger-sm" id="historyDeleteBtn">删除</button>
                 </div>
-                <div class="modal-body">
-                    <div class="d-flex gap-2 mb-3">
-                        <select class="form-select" id="historySessionSelect">
-                            <option value="">请选择会话</option>
-                        </select>
-                        <button class="btn btn-outline-secondary" id="refreshHistoryBtn" type="button">刷新</button>
-                        <button class="btn btn-outline-primary" id="historyDownloadBtn" type="button">下载</button>
-                        <button class="btn btn-success" id="historyResumeBtn" type="button">继续聊天</button>
-                        <button class="btn btn-outline-danger" id="historyDeleteBtn" type="button">删除</button>
-                    </div>
-                    <div class="small text-muted mb-2" id="historyMeta"></div>
-                    <pre class="history-preview rounded p-3 small mb-0" id="historyPreview">暂无会话记录</pre>
-                </div>
+                <div class="history-meta" id="historyMeta"></div>
+                <pre class="history-preview" id="historyPreview">暂无会话记录</pre>
             </div>
         </div>
     </div>
 
-    <!-- Markdown 渲染库 -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="js/chat.js" type="module"></script>
+    <!-- 图片灯箱 -->
+    <div class="lightbox" id="lightbox" style="display: none;">
+        <div class="lightbox-overlay"></div>
+        <div class="lightbox-content">
+            <button class="lightbox-close" id="lightboxClose">✕</button>
+            <img src="" alt="" id="lightboxImage">
+            <div class="lightbox-info">
+                <span class="lightbox-filename" id="lightboxFilename"></span>
+                <a href="" target="_blank" rel="noopener noreferrer" id="lightboxOriginal">查看原图</a>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/js/chat.js"></script>
 </body>
 </html>

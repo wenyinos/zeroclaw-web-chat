@@ -18,21 +18,29 @@ npm run dev          # 开发模式（文件热重载）
 
 ## Architecture
 
-### Backend (`server.js`, ~860行)
+### Backend 模块结构
 
-单文件 Express 服务器，职责：
+```
+server.js          # 主入口（配置、启动、中间件）
+lib/
+  logger.js        # 日志模块（控制台 + 文件）
+  sessions.js      # 会话管理（内存 Map，TTL 12h）
+  rateLimiter.js   # 验证限流（IP 防暴力破解）
+  utils.js         # 工具函数（IP、Markdown、文件系统）
+  ws-proxy.js      # WebSocket 代理（协议转换）
+routes/
+  api.js           # REST API 路由
+```
 
-- **认证**：`POST /api/verify` — Access Key 验证（IP 限流 + timing-safe 比较），返回 sessionId
-- **配置**：`GET /api/config` — 返回后端类型、Gateway URL、token
-- **会话记录**：
-  - `POST /api/sessions/save` — 保存消息到 `chat_records/<id>.md` + `.json`
-  - `GET /api/sessions` — 列出所有会话
-  - `GET /api/sessions/:id` — 获取会话（返回 Markdown 内容 + JSON 消息数组）
-  - `DELETE /api/sessions/:id` — 删除会话文件
-- **命令执行**：`POST /api/execute` — 受限 shell 命令（白名单）
-- **WebSocket 代理**：`/ws/chat` — 代理到 Gateway，协议转换
+### API 路由 (`routes/api.js`)
 
-**会话管理**：内存 `Map` 存储，TTL 12小时自动清理，每 30 分钟检查。
+- `GET /api/config` — 返回后端类型、Gateway URL、token
+- `POST /api/verify` — Access Key 验证（IP 限流 + timing-safe 比较），返回 sessionId
+- `POST /api/execute` — 受限 shell 命令（白名单）
+- `POST /api/sessions/save` — 保存消息到 `chat_records/<id>.md` + `.json`
+- `GET /api/sessions` — 列出所有会话
+- `GET /api/sessions/:id` — 获取会话（返回 Markdown 内容 + JSON 消息数组）
+- `DELETE /api/sessions/:id` — 删除会话文件
 
 ### WebSocket 代理协议转换
 

@@ -1,0 +1,17 @@
+{
+  "name": "Claw Agent",
+  "short_name": "Claw",
+  "description": "AI Assistant Web Interface",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#c97b5a",
+  "background_color": "#f7f0e6",
+  "icons": [
+    {
+      "src": "/favicon/favicon.ico",
+      "sizes": "64x64 32x32 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}
