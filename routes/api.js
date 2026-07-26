@@ -30,6 +30,7 @@ import {
   addGroupMessage,
   getGroupMessages,
   deleteGroupMessage,
+  updateGroupMessageContent,
   toggleGroupMessageFavorite,
   clearGroupMessages,
   getAssistants,
@@ -77,6 +78,16 @@ function getConfig() {
     MEMORY_ENABLED: process.env.MEMORY_ENABLED === 'true',
     SESSION_TTL_MS: Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000)
   };
+}
+
+// 前端会先用本地 id 渲染消息，之后靠同一个 id 去删除/收藏/更新。
+// 若后端另生成 id，前端持有的 id 在库中不存在，那些操作会静默失效。
+// 所以采用前端传来的 id，仅做格式校验；缺失或非法时才回退到自生成。
+function adoptClientId(rawId, prefix) {
+  if (typeof rawId === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(rawId)) {
+    return rawId;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
 // 中间件：验证会话
@@ -282,13 +293,13 @@ router.get('/api/chat/messages', requireVerifiedSession, (req, res) => {
 
 // API 路由 - 发送私聊消息
 router.post('/api/chat/send', requireVerifiedSession, (req, res) => {
-  const { sessionId, content, role, thinking, images, parentMsgId } = req.body;
+  const { sessionId, content, role, thinking, images, parentMsgId, id } = req.body;
   if (!content && (!images || images.length === 0)) {
     return res.status(400).json({ success: false, error: '消息内容不能为空' });
   }
 
   const message = {
-    id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    id: adoptClientId(id, 'msg'),
     role: role || 'user',
     content: content || '',
     thinking: thinking || '',
@@ -302,13 +313,16 @@ router.post('/api/chat/send', requireVerifiedSession, (req, res) => {
   addChatMessage(chatSessionId, message);
 
   log('info', `私聊消息已发送: ${message.id}, session: ${chatSessionId}`);
-  return res.json({ success: true, message });
+  return res.json({ success: true, message: { ...message, timestamp: new Date().toISOString() } });
 });
 
 // API 路由 - 删除私聊消息
 router.delete('/api/chat/messages/:id', requireVerifiedSession, (req, res) => {
   const { id } = req.params;
-  deleteChatMessage(id);
+  if (!deleteChatMessage(id)) {
+    log('warn', `待删除的私聊消息不存在: ${id}`);
+    return res.status(404).json({ success: false, error: '消息不存在' });
+  }
   log('info', `私聊消息已删除: ${id}`);
   return res.json({ success: true, id });
 });
@@ -331,13 +345,13 @@ router.get('/api/group/messages', requireVerifiedSession, (req, res) => {
 
 // API 路由 - 发送群聊消息
 router.post('/api/group/send', requireVerifiedSession, (req, res) => {
-  const { content, sender, assistantId, parentMsgId, images } = req.body;
+  const { content, sender, assistantId, parentMsgId, images, id } = req.body;
   if (!content && (!images || images.length === 0)) {
     return res.status(400).json({ success: false, error: '消息内容不能为空' });
   }
 
   const message = {
-    id: `grp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    id: adoptClientId(id, 'grp'),
     assistantId: assistantId || 'default',
     sender: sender || '用户',
     role: 'user',
@@ -352,12 +366,13 @@ router.post('/api/group/send', requireVerifiedSession, (req, res) => {
   addGroupMessage(message);
 
   log('info', `群聊消息已发送: ${message.id}`);
-  return res.json({ success: true, message });
+  // 带上 timestamp：前端直接渲染这个对象，缺字段会显示 Invalid Date
+  return res.json({ success: true, message: { ...message, timestamp: new Date().toISOString() } });
 });
 
 // API 路由 - 助手回复群聊消息
 router.post('/api/group/reply', requireVerifiedSession, (req, res) => {
-  const { content, assistantId, parentMsgId, thinking } = req.body;
+  const { content, assistantId, parentMsgId, thinking, id } = req.body;
   if (!content) {
     return res.status(400).json({ success: false, error: '回复内容不能为空' });
   }
@@ -365,7 +380,7 @@ router.post('/api/group/reply', requireVerifiedSession, (req, res) => {
   const assistant = getAssistant(assistantId) || getDefaultAssistant();
 
   const message = {
-    id: `grp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    id: adoptClientId(id, 'grp'),
     assistantId: assistant.id,
     sender: assistant.name,
     role: 'assistant',
@@ -381,13 +396,16 @@ router.post('/api/group/reply', requireVerifiedSession, (req, res) => {
   addGroupMessage(message);
 
   log('info', `助手回复已发送: ${message.id}, 助手: ${assistant.name}`);
-  return res.json({ success: true, message });
+  return res.json({ success: true, message: { ...message, timestamp: new Date().toISOString() } });
 });
 
 // API 路由 - 删除群聊消息
 router.delete('/api/group/messages/:id', requireVerifiedSession, (req, res) => {
   const { id } = req.params;
-  deleteGroupMessage(id);
+  if (!deleteGroupMessage(id)) {
+    log('warn', `待删除的群聊消息不存在: ${id}`);
+    return res.status(404).json({ success: false, error: '消息不存在' });
+  }
   log('info', `群聊消息已删除: ${id}`);
   return res.json({ success: true, id });
 });
@@ -405,9 +423,11 @@ router.put('/api/group/messages/:id', requireVerifiedSession, (req, res) => {
   const { id } = req.params;
   const { content, thinking } = req.body;
 
-  // 更新数据库中的消息
-  const db = getDb();
-  db.run('UPDATE group_messages SET content = ?, thinking = ? WHERE id = ?', [content, thinking || '', id]);
+  // 走 database.js：直接 db.run 会漏掉 saveDatabase()，改动只留在内存里
+  if (!updateGroupMessageContent(id, content, thinking)) {
+    log('warn', `待更新的群聊消息不存在: ${id}`);
+    return res.status(404).json({ success: false, error: '消息不存在' });
+  }
 
   log('info', `群聊消息已更新: ${id}`);
   return res.json({ success: true, id });

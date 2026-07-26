@@ -1320,6 +1320,8 @@ class ClawAgent {
           'X-Session-Id': this.verifiedSessionId
         },
         body: JSON.stringify({
+          // 带上本地 id，否则后续删除/收藏会因前后端 id 不一致而静默失效
+          id: message.id,
           sessionId: this.sessionId,
           content: message.content,
           role: message.role,
@@ -1342,6 +1344,8 @@ class ClawAgent {
           'X-Session-Id': this.verifiedSessionId
         },
         body: JSON.stringify({
+          // 占位消息稍后要按这个 id 更新成真实回复，必须与库中一致
+          id: message.id,
           content: message.content,
           assistantId: message.assistantId,
           parentMsgId: message.parentMsgId,
