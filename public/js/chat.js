@@ -1958,9 +1958,61 @@ class ClawAgent {
 
         this.elements.historyPreview.textContent = preview || '暂无消息';
         this.elements.historyMeta.textContent = `消息数: ${data.messages.length} | 更新时间: ${new Date(data.updatedAt).toLocaleString('zh-CN')}`;
+        // 预览是截断的，下载要用后端生成的完整 Markdown
+        this.currentSessionMarkdown = data.content || '';
       }
     } catch (error) {
       console.error('加载会话失败:', error);
+    }
+  }
+
+  downloadSession() {
+    const sessionId = this.elements.historySessionSelect.value;
+    if (!sessionId) {
+      this.showToast('error', '无法下载', '请先选择一个会话');
+      return;
+    }
+    if (!this.currentSessionMarkdown) {
+      this.showToast('error', '无法下载', '该会话没有可导出的对话内容');
+      return;
+    }
+
+    const blob = new Blob([this.currentSessionMarkdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${sessionId}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  searchMemories(keyword) {
+    const kw = keyword.trim().toLowerCase();
+    document.querySelectorAll('.memory-item').forEach(item => {
+      item.style.display = !kw || item.textContent.toLowerCase().includes(kw) ? '' : 'none';
+    });
+  }
+
+  // 转发到后端白名单命令（仅受限的系统信息查询）
+  async executeShellCommand(command) {
+    try {
+      const response = await fetch('/api/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': this.verifiedSessionId
+        },
+        body: JSON.stringify({ command })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        this.addConsoleEvent('command', `$ ${command}`, data.output || '(无输出)');
+      } else {
+        this.addConsoleEvent('error', '执行失败', data.error || '未知错误');
+      }
+    } catch (error) {
+      this.addConsoleEvent('error', '执行失败', error.message);
     }
   }
 
@@ -2044,7 +2096,8 @@ class ClawAgent {
         this.executeForge();
         break;
       default:
-        this.addConsoleEvent('error', '错误', `未知命令: ${command}`);
+        // 非内置命令交给后端白名单执行
+        this.executeShellCommand(command);
     }
   }
 
@@ -3204,6 +3257,7 @@ class ClawAgent {
     elements.historySessionSelect.addEventListener('change', (e) => {
       this.loadSession(e.target.value);
     });
+    elements.historyDownloadBtn.addEventListener('click', () => this.downloadSession());
     elements.historyResumeBtn.addEventListener('click', () => this.resumeSession());
     elements.historyDeleteBtn.addEventListener('click', () => this.deleteSession());
     elements.refreshHistoryBtn.addEventListener('click', () => this.loadHistory());
@@ -3297,6 +3351,9 @@ class ClawAgent {
     });
     elements.uploadMemoryBtn.addEventListener('click', () => {
       elements.memoryUploadInput.click();
+    });
+    elements.memorySearchInput.addEventListener('input', (e) => {
+      this.searchMemories(e.target.value);
     });
     elements.memoryUploadInput.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {

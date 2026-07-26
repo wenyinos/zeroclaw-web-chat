@@ -15,7 +15,8 @@ import {
   getHeaderValue,
   getClientIp,
   normalizeIp,
-  sanitizeSessionId
+  sanitizeSessionId,
+  buildSessionMarkdown
 } from '../lib/utils.js';
 import {
   initDatabase,
@@ -265,6 +266,8 @@ router.put('/api/settings', requireVerifiedSession, (req, res) => {
     theme: getSetting('theme') || 'light',
     notifications: getSetting('notifications') === 'true'
   };
+  // 推给其他标签页，前端 SSE 已监听 settings 事件
+  broadcastSettings(settings);
   return res.json({ success: true, settings });
 });
 
@@ -590,7 +593,7 @@ router.get('/api/sessions/:sessionId', requireVerifiedSession, (req, res) => {
     sessionId,
     fileName: `${sessionId}.json`,
     updatedAt: messages.length > 0 ? messages[messages.length - 1].timestamp : new Date().toISOString(),
-    content: '',
+    content: buildSessionMarkdown(sessionId, messages),
     messages
   });
 });
@@ -815,7 +818,8 @@ router.get('/api/stream', requireVerifiedSession, (req, res) => {
   };
   res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
 
-  sseClients.add(req);
+  // 必须存 res：broadcastSSE 调用 client.write()，req 是可读流没有该方法
+  sseClients.add(res);
   log('info', `SSE 客户端已连接, 当前: ${sseClients.size}`);
 
   const heartbeat = setInterval(() => {
@@ -828,7 +832,7 @@ router.get('/api/stream', requireVerifiedSession, (req, res) => {
 
   req.on('close', () => {
     clearInterval(heartbeat);
-    sseClients.delete(req);
+    sseClients.delete(res);
     log('info', `SSE 客户端已断开, 当前: ${sseClients.size}`);
   });
 });
