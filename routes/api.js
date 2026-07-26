@@ -33,6 +33,8 @@ import {
   updateGroupMessageContent,
   toggleGroupMessageFavorite,
   clearGroupMessages,
+  getGroupSessions,
+  deleteGroupSession,
   getAssistants,
   getAssistant,
   getDefaultAssistant,
@@ -339,19 +341,21 @@ router.post('/api/chat/messages/:id/favorite', requireVerifiedSession, (req, res
 router.get('/api/group/messages', requireVerifiedSession, (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 80, 500);
   const assistantId = req.query.assistant_id || null;
-  const messages = getGroupMessages(assistantId, limit);
+  const groupSessionId = req.query.session_id || null;
+  const messages = getGroupMessages(assistantId, limit, groupSessionId);
   return res.json({ success: true, messages });
 });
 
 // API 路由 - 发送群聊消息
 router.post('/api/group/send', requireVerifiedSession, (req, res) => {
-  const { content, sender, assistantId, parentMsgId, images, id } = req.body;
+  const { content, sender, assistantId, parentMsgId, images, id, sessionId } = req.body;
   if (!content && (!images || images.length === 0)) {
     return res.status(400).json({ success: false, error: '消息内容不能为空' });
   }
 
   const message = {
     id: adoptClientId(id, 'grp'),
+    sessionId: sessionId || 'group-legacy',
     assistantId: assistantId || 'default',
     sender: sender || '用户',
     role: 'user',
@@ -372,7 +376,7 @@ router.post('/api/group/send', requireVerifiedSession, (req, res) => {
 
 // API 路由 - 助手回复群聊消息
 router.post('/api/group/reply', requireVerifiedSession, (req, res) => {
-  const { content, assistantId, parentMsgId, thinking, id } = req.body;
+  const { content, assistantId, parentMsgId, thinking, id, sessionId } = req.body;
   if (!content) {
     return res.status(400).json({ success: false, error: '回复内容不能为空' });
   }
@@ -381,6 +385,7 @@ router.post('/api/group/reply', requireVerifiedSession, (req, res) => {
 
   const message = {
     id: adoptClientId(id, 'grp'),
+    sessionId: sessionId || 'group-legacy',
     assistantId: assistant.id,
     sender: assistant.name,
     role: 'assistant',
@@ -439,6 +444,46 @@ router.delete('/api/group/messages', requireVerifiedSession, (req, res) => {
   clearGroupMessages(assistant_id || null);
   log('info', `群聊消息已清空: ${assistant_id || 'all'}`);
   return res.json({ success: true });
+});
+
+// API 路由 - 群聊会话列表
+router.get('/api/group/sessions', requireVerifiedSession, (req, res) => {
+  const sessions = getGroupSessions();
+  return res.json({
+    success: true,
+    sessions: sessions.map(s => ({
+      sessionId: s.sessionId,
+      fileName: `${s.sessionId}.md`,
+      updatedAt: s.updatedAt,
+      messageCount: s.messageCount
+    }))
+  });
+});
+
+// API 路由 - 群聊会话详情（含可下载的 Markdown）
+router.get('/api/group/sessions/:sessionId', requireVerifiedSession, (req, res) => {
+  const { sessionId } = req.params;
+  const messages = getGroupMessages(null, 500, sessionId);
+
+  return res.json({
+    success: true,
+    sessionId,
+    fileName: `${sessionId}.md`,
+    updatedAt: messages.length > 0 ? messages[messages.length - 1].timestamp : new Date().toISOString(),
+    content: buildSessionMarkdown(sessionId, messages),
+    messages
+  });
+});
+
+// API 路由 - 删除群聊会话
+router.delete('/api/group/sessions/:sessionId', requireVerifiedSession, (req, res) => {
+  const { sessionId } = req.params;
+  const removed = deleteGroupSession(sessionId);
+  if (removed === 0) {
+    return res.status(404).json({ success: false, error: '会话不存在' });
+  }
+  log('info', `群聊会话已删除: ${sessionId}, 消息数: ${removed}`);
+  return res.json({ success: true, sessionId, removed });
 });
 
 // API 路由 - 获取助手列表

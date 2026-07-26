@@ -182,7 +182,13 @@
                         <button class="btn-icon" id="groupSearchBtn" title="搜索">
                             🔍
                         </button>
-                        <button class="btn-icon" id="groupClearBtn" title="清空聊天">
+                        <button class="btn-icon" id="groupNewChatBtn" title="新建群聊会话">
+                            ➕
+                        </button>
+                        <button class="btn-icon" id="groupHistoryBtn" title="会话记录">
+                            📜
+                        </button>
+                        <button class="btn-icon" id="groupClearBtn" title="清空当前会话">
                             🗑️
                         </button>
                     </div>
@@ -484,6 +490,29 @@
                 </div>
                 <div class="history-meta" id="historyMeta"></div>
                 <pre class="history-preview" id="historyPreview">暂无会话记录</pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 群聊会话记录模态框 -->
+    <div class="modal-overlay" id="groupHistoryModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>群聊会话记录</h3>
+                <button class="btn-icon modal-close" id="groupHistoryModalClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="history-controls">
+                    <select class="history-select" id="groupHistorySessionSelect">
+                        <option value="">请选择会话</option>
+                    </select>
+                    <button class="btn-secondary-sm" id="groupRefreshHistoryBtn">刷新</button>
+                    <button class="btn-secondary-sm" id="groupHistoryDownloadBtn">下载</button>
+                    <button class="btn-primary-sm" id="groupHistoryResumeBtn">继续聊天</button>
+                    <button class="btn-danger-sm" id="groupHistoryDeleteBtn">删除</button>
+                </div>
+                <div class="history-meta" id="groupHistoryMeta"></div>
+                <pre class="history-preview" id="groupHistoryPreview">暂无会话记录</pre>
             </div>
         </div>
     </div>

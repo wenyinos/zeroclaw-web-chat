@@ -39,6 +39,9 @@ class ClawAgent {
     this.currentAssistant = null;
     this.groupMessages = [];
 
+    // 群聊会话 id（与私聊 sessionId 同构，决定消息归属哪个会话）
+    this.groupSessionId = this.getOrCreateGroupSessionId();
+
     // 置顶记忆（作为长期记忆随消息发送）
     this.pinnedMemories = [];
 
@@ -154,6 +157,17 @@ class ClawAgent {
       groupMessageInput: document.getElementById('groupMessageInput'),
       groupSendBtn: document.getElementById('groupSendBtn'),
       groupSearchBtn: document.getElementById('groupSearchBtn'),
+      groupNewChatBtn: document.getElementById('groupNewChatBtn'),
+      groupHistoryBtn: document.getElementById('groupHistoryBtn'),
+      groupHistoryModal: document.getElementById('groupHistoryModal'),
+      groupHistoryModalClose: document.getElementById('groupHistoryModalClose'),
+      groupHistorySessionSelect: document.getElementById('groupHistorySessionSelect'),
+      groupRefreshHistoryBtn: document.getElementById('groupRefreshHistoryBtn'),
+      groupHistoryDownloadBtn: document.getElementById('groupHistoryDownloadBtn'),
+      groupHistoryResumeBtn: document.getElementById('groupHistoryResumeBtn'),
+      groupHistoryDeleteBtn: document.getElementById('groupHistoryDeleteBtn'),
+      groupHistoryMeta: document.getElementById('groupHistoryMeta'),
+      groupHistoryPreview: document.getElementById('groupHistoryPreview'),
       groupSearchBar: document.getElementById('groupSearchBar'),
       groupSearchInput: document.getElementById('groupSearchInput'),
       groupSearchCount: document.getElementById('groupSearchCount'),
@@ -365,6 +379,9 @@ class ClawAgent {
 
     // 预载置顶记忆，首条消息也能带上长期记忆
     this.refreshPinnedMemories();
+
+    // 群聊会话写进 URL，刷新/分享后能回到同一个会话
+    this.syncGroupSessionToUrl();
 
     // 加载历史消息
     this.loadChatHistory();
@@ -1354,6 +1371,7 @@ class ClawAgent {
         body: JSON.stringify({
           // 占位消息稍后要按这个 id 更新成真实回复，必须与库中一致
           id: message.id,
+          sessionId: this.groupSessionId,
           content: message.content,
           assistantId: message.assistantId,
           parentMsgId: message.parentMsgId,
@@ -1902,6 +1920,140 @@ class ClawAgent {
     window.history.replaceState({}, '', newUrl);
 
     return sessionId;
+  }
+
+  // 群聊会话 id：优先取 URL 的 group 参数，便于分享/恢复
+  getOrCreateGroupSessionId() {
+    const fromUrl = new URLSearchParams(window.location.search).get('group');
+    if (fromUrl) return fromUrl;
+    return `group-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  syncGroupSessionToUrl() {
+    const params = new URLSearchParams(window.location.search);
+    params.set('group', this.groupSessionId);
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}`);
+  }
+
+  newGroupChat() {
+    this.groupMessages = [];
+    this.pendingGroupReplies.clear();
+    this.groupSessionId = `group-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.syncGroupSessionToUrl();
+    this.renderGroupMessages();
+    this.showToast('success', '已新建群聊会话', '之前的记录可在 📜 会话记录里找回');
+  }
+
+  async loadGroupHistory() {
+    try {
+      const response = await fetch('/api/group/sessions', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+      if (!data.success) return;
+
+      const select = this.elements.groupHistorySessionSelect;
+      select.innerHTML = '<option value="">请选择会话</option>' + data.sessions.map(s => {
+        const time = new Date(s.updatedAt).toLocaleString('zh-CN', { hour12: false });
+        const current = s.sessionId === this.groupSessionId ? '（当前）' : '';
+        return `<option value="${s.sessionId}">${time} · ${s.messageCount} 条${current}</option>`;
+      }).join('');
+    } catch (error) {
+      console.error('加载群聊会话列表失败:', error);
+    }
+  }
+
+  async loadGroupSession(sessionId) {
+    if (!sessionId) return;
+
+    try {
+      const response = await fetch(`/api/group/sessions/${sessionId}`, {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+      if (!data.success) return;
+
+      const preview = data.messages.map(msg =>
+        `${msg.sender}: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}`
+      ).join('\n');
+
+      this.elements.groupHistoryPreview.textContent = preview || '暂无消息';
+      this.elements.groupHistoryMeta.textContent = `消息数: ${data.messages.length} | 更新时间: ${new Date(data.updatedAt).toLocaleString('zh-CN')}`;
+      // 预览是截断的，下载要用后端生成的完整 Markdown
+      this.currentGroupSessionMarkdown = data.content || '';
+    } catch (error) {
+      console.error('加载群聊会话失败:', error);
+    }
+  }
+
+  downloadGroupSession() {
+    const sessionId = this.elements.groupHistorySessionSelect.value;
+    if (!sessionId) {
+      this.showToast('error', '无法下载', '请先选择一个会话');
+      return;
+    }
+    if (!this.currentGroupSessionMarkdown) {
+      this.showToast('error', '无法下载', '该会话没有可导出的对话内容');
+      return;
+    }
+
+    const blob = new Blob([this.currentGroupSessionMarkdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${sessionId}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async resumeGroupSession() {
+    const sessionId = this.elements.groupHistorySessionSelect.value;
+    if (!sessionId) {
+      this.showToast('error', '无法继续', '请先选择一个会话');
+      return;
+    }
+
+    this.groupSessionId = sessionId;
+    this.syncGroupSessionToUrl();
+    await this.loadGroupMessages();
+    this.elements.groupHistoryModal.style.display = 'none';
+    this.switchTab('group');
+    this.showToast('success', '已切换会话', `共 ${this.groupMessages.length} 条消息`);
+  }
+
+  async deleteGroupSession() {
+    const sessionId = this.elements.groupHistorySessionSelect.value;
+    if (!sessionId) {
+      this.showToast('error', '无法删除', '请先选择一个会话');
+      return;
+    }
+    if (!confirm('确定删除该群聊会话的全部消息？')) return;
+
+    try {
+      const response = await fetch(`/api/group/sessions/${sessionId}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      const data = await response.json();
+      if (!data.success) {
+        this.showToast('error', '删除失败', data.error || '未知错误');
+        return;
+      }
+
+      // 删掉的正是当前会话时，顺势开一个新的，避免继续往已删会话里写
+      if (sessionId === this.groupSessionId) {
+        this.newGroupChat();
+      }
+
+      this.elements.groupHistoryPreview.textContent = '暂无会话记录';
+      this.elements.groupHistoryMeta.textContent = '';
+      this.currentGroupSessionMarkdown = '';
+      await this.loadGroupHistory();
+      this.showToast('success', '已删除', `移除 ${data.removed} 条消息`);
+    } catch (error) {
+      console.error('删除群聊会话失败:', error);
+      this.showToast('error', '删除失败', error.message);
+    }
   }
 
   newChat() {
@@ -2647,6 +2799,7 @@ class ClawAgent {
           'X-Session-Id': this.verifiedSessionId
         },
         body: JSON.stringify({
+          sessionId: this.groupSessionId,
           content,
           sender: this.currentSettings?.userName || '用户',
           images
@@ -2902,7 +3055,7 @@ class ClawAgent {
 
   async loadGroupMessages() {
     try {
-      const response = await fetch('/api/group/messages?limit=80', {
+      const response = await fetch(`/api/group/messages?limit=80&session_id=${encodeURIComponent(this.groupSessionId)}`, {
         headers: { 'X-Session-Id': this.verifiedSessionId }
       });
       const data = await response.json();
@@ -2992,19 +3145,20 @@ class ClawAgent {
   }
 
   async clearGroupMessages() {
-    if (!confirm('确定要清空群聊消息吗？')) return;
+    if (!confirm('确定要清空当前群聊会话的消息吗？其他会话不受影响。')) return;
 
     try {
-      const response = await fetch('/api/group/messages', {
+      // 只清当前会话，不能用 DELETE /api/group/messages（那会清掉所有会话）
+      const response = await fetch(`/api/group/sessions/${this.groupSessionId}`, {
         method: 'DELETE',
         headers: { 'X-Session-Id': this.verifiedSessionId }
       });
 
-      const data = await response.json();
-      if (data.success) {
+      // 404 表示本来就没有消息，同样视为已清空
+      if (response.ok || response.status === 404) {
         this.groupMessages = [];
         this.renderGroupMessages();
-        this.showToast('success', '已清空', '群聊消息已清空');
+        this.showToast('success', '已清空', '当前会话的消息已清空');
       }
     } catch (error) {
       console.error('清空群聊失败:', error);
@@ -3339,6 +3493,23 @@ class ClawAgent {
     if (elements.groupClearBtn) {
       elements.groupClearBtn.addEventListener('click', () => this.clearGroupMessages());
     }
+
+    // 群聊会话记录
+    elements.groupNewChatBtn.addEventListener('click', () => this.newGroupChat());
+    elements.groupHistoryBtn.addEventListener('click', () => {
+      elements.groupHistoryModal.style.display = 'flex';
+      this.loadGroupHistory();
+    });
+    elements.groupHistoryModalClose.addEventListener('click', () => {
+      elements.groupHistoryModal.style.display = 'none';
+    });
+    elements.groupHistorySessionSelect.addEventListener('change', (e) => {
+      this.loadGroupSession(e.target.value);
+    });
+    elements.groupRefreshHistoryBtn.addEventListener('click', () => this.loadGroupHistory());
+    elements.groupHistoryDownloadBtn.addEventListener('click', () => this.downloadGroupSession());
+    elements.groupHistoryResumeBtn.addEventListener('click', () => this.resumeGroupSession());
+    elements.groupHistoryDeleteBtn.addEventListener('click', () => this.deleteGroupSession());
 
     // 图片上传
     elements.imageUploadBtn.addEventListener('click', () => {
