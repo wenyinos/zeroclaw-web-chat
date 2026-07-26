@@ -820,6 +820,7 @@ class ClawAgent {
         } else {
           // 私聊消息
           this.hideTyping();
+          this.setBusy(false);
           const message = this.addMessage('assistant', data.content, { typewriter: true });
           this.sendNotification('新消息', data.content.substring(0, 100));
           // 保存到后端
@@ -842,6 +843,7 @@ class ClawAgent {
         break;
       case 'error':
         this.hideTyping();
+        this.setBusy(false);
         this.addSystemMessage(data.message || '发生错误', 'error');
         break;
     }
@@ -995,7 +997,9 @@ class ClawAgent {
           <div class="bubble-actions">
             <button class="action-btn" onclick="app.copyMessage('${message.id}')" title="复制">📋</button>
             <button class="action-btn" onclick="app.replyMessage('${message.id}')" title="回复">↩️</button>
+            ${isMe ? '' : `<button class="action-btn" onclick="app.regenerateMessage('${message.id}')" title="重新生成">🔄</button>`}
             <button class="action-btn" onclick="app.toggleFavorite('${message.id}')" title="收藏" data-favorite="${message.favorite ? 'true' : 'false'}">${message.favorite ? '⭐' : '☆'}</button>
+            <button class="action-btn" onclick="app.deleteMessage('${message.id}')" title="删除">🗑️</button>
           </div>
         </div>
         <span class="msg-time">${time}</span>
@@ -1125,6 +1129,95 @@ class ClawAgent {
     }
   }
 
+  // 等待回复/逐字渲染期间，发送按钮切换为停止
+  setBusy(busy) {
+    this.isBusy = busy;
+    const btn = this.elements.sendBtn;
+    if (!btn) return;
+    btn.classList.toggle('stop', busy);
+    btn.title = busy ? '停止' : '发送';
+    btn.innerHTML = `<span class="send-icon">${busy ? '■' : '↑'}</span>`;
+  }
+
+  // 停止逐字动画并立即显示已收到的完整内容。
+  // 注意：不会中断 Gateway 端已经开始的生成——picoclaw 未公开取消协议。
+  stopGenerating() {
+    this.stopTypewriter();
+
+    const last = this.messages[this.messages.length - 1];
+    if (last && last.role === 'assistant') {
+      const target = document.querySelector(`[data-message-id="${last.id}"] .bubble-text`);
+      if (target) {
+        target.innerHTML = this.renderContent(last.content || '');
+      }
+    }
+
+    this.hideTyping();
+    this.setBusy(false);
+    this.scrollToBottom();
+  }
+
+  // 重新生成：丢弃这条回复，用它对应的上一条用户消息重新提问
+  async regenerateMessage(messageId) {
+    if (!this.isConnected) {
+      this.showToast('error', '未连接', '请等待连接恢复后再试');
+      return;
+    }
+
+    const index = this.messages.findIndex(m => m.id === messageId);
+    if (index < 0) return;
+
+    let userIndex = index - 1;
+    while (userIndex >= 0 && this.messages[userIndex].role !== 'user') {
+      userIndex -= 1;
+    }
+    if (userIndex < 0) {
+      this.showToast('error', '无法重新生成', '找不到对应的用户消息');
+      return;
+    }
+
+    const userMessage = this.messages[userIndex];
+
+    // 丢弃这条回复及其之后的消息（本地与后端）
+    const dropped = this.messages.splice(index);
+    for (const message of dropped) {
+      this.deleteChatMessageFromDb(message.id);
+    }
+    this.renderMessages();
+
+    const memoryPrompt = this.buildMemoryPrompt();
+    this.ws.send(JSON.stringify({
+      type: 'message',
+      content: this.withMemory(userMessage.content || '', memoryPrompt),
+      images: userMessage.images || [],
+      context: this.getContextMessages(20)
+    }));
+
+    this.showTyping();
+    this.setBusy(true);
+  }
+
+  async deleteMessage(messageId) {
+    const index = this.messages.findIndex(m => m.id === messageId);
+    if (index < 0) return;
+    if (!confirm('确定删除这条消息？')) return;
+
+    this.messages.splice(index, 1);
+    this.renderMessages();
+    await this.deleteChatMessageFromDb(messageId);
+  }
+
+  async deleteChatMessageFromDb(messageId) {
+    try {
+      await fetch(`/api/chat/messages/${messageId}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+    } catch (error) {
+      console.error('删除消息失败:', error);
+    }
+  }
+
   scrollToBottom(scope = 'chat') {
     let container;
     if (scope === 'group') {
@@ -1206,6 +1299,7 @@ class ClawAgent {
 
     // 不依赖 Gateway 的 typing 事件，发送后立即给出等待反馈
     this.showTyping();
+    this.setBusy(true);
   }
 
   getContextMessages(limit = 20) {
@@ -3018,7 +3112,13 @@ class ClawAgent {
     });
 
     // 发送按钮
-    elements.sendBtn.addEventListener('click', () => this.sendMessage());
+    elements.sendBtn.addEventListener('click', () => {
+      if (this.isBusy) {
+        this.stopGenerating();
+      } else {
+        this.sendMessage();
+      }
+    });
 
     // 群聊输入
     if (elements.groupMessageInput) {

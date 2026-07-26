@@ -838,6 +838,10 @@ textarea {
   transition: background .15s, transform .08s;
 }
 
+.send-btn.stop {
+  background: var(--danger);
+}
+
 .send-btn:hover:not(:disabled) {
   background: var(--accent-strong);
 }
