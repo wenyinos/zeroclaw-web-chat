@@ -32,7 +32,7 @@ class ClawAgent {
 
     // 消息上下文：用于区分私聊/群聊回复
     this.messageContext = 'chat'; // 'chat' 或 'group'
-    this.pendingGroupReplies = new Map(); // 等待回复的群聊助手 Map<thinkingMsgId, assistant>
+    this.pendingGroupReplies = new Map(); // Map<thinkingMsgId, { assistant, settle, timer }>
 
     // 助手配置
     this.assistants = [];
@@ -41,6 +41,9 @@ class ClawAgent {
 
     // 置顶记忆（作为长期记忆随消息发送）
     this.pinnedMemories = [];
+
+    // 单个助手回复的最长等待时间，超时后放弃该助手继续下一个
+    this.GROUP_REPLY_TIMEOUT_MS = 90000;
 
     // 贴纸状态
     this.stickersLoaded = false;
@@ -854,8 +857,10 @@ class ClawAgent {
     const entries = Array.from(this.pendingGroupReplies.entries());
     if (entries.length === 0) return;
 
-    const [thinkingMsgId, assistant] = entries[0];
+    const [thinkingMsgId, pending] = entries[0];
+    const { assistant, settle, timer } = pending;
     this.pendingGroupReplies.delete(thinkingMsgId);
+    clearTimeout(timer);
 
     // 查找对应的"正在思考"消息并更新
     const messages = this.groupMessages;
@@ -891,6 +896,9 @@ class ClawAgent {
     if (this.pendingGroupReplies.size === 0) {
       this.messageContext = 'chat';
     }
+
+    // 放行：调用方据此发起下一个助手
+    settle();
   }
 
   updateGroupThinking(data) {
@@ -2660,11 +2668,12 @@ class ClawAgent {
             await this.generateGroupReply(content, assistant, data.message.id);
           }
         } else {
-          // 没有 @提及，所有助手同时回复（并行执行）
-          const promises = this.assistants.map(assistant =>
-            this.generateGroupReply(content, assistant, data.message.id)
-          );
-          await Promise.all(promises);
+          // 没有 @提及，所有助手依次回复。
+          // 不能并发：同一条 WS 对应 picoclaw 的同一个 session，
+          // 并发只会拿到一条回复，其余助手永远卡在「正在思考...」
+          for (const assistant of this.assistants) {
+            await this.generateGroupReply(content, assistant, data.message.id);
+          }
         }
       }
     } catch (error) {
@@ -2741,7 +2750,13 @@ class ClawAgent {
     this.hideMentionMenu();
   }
 
+  // 必须等到本轮回复落地才 resolve，调用方据此串行发起下一个助手。
+  // picoclaw 一条连接只对应一个 agent session，并发发多条只会产出一条回复，
+  // 其余请求只吐 thought，占位消息会永远停在「正在思考...」。
   async generateGroupReply(userContent, assistant, parentMsgId) {
+    let settle;
+    const finished = new Promise(resolve => { settle = resolve; });
+
     try {
       // 设置消息上下文为群聊
       this.messageContext = 'group';
@@ -2764,8 +2779,23 @@ class ClawAgent {
         timestamp: new Date().toISOString()
       };
 
+      // 超时兜底：Gateway 不回或只回 thought 时，别让占位消息永远转下去
+      const timer = setTimeout(() => {
+        if (!this.pendingGroupReplies.has(thinkingMsgId)) return;
+        this.pendingGroupReplies.delete(thinkingMsgId);
+
+        thinkingMsg.content = '（等待回复超时，未收到该助手的回应）';
+        this.updateGroupMessage(thinkingMsg);
+        this.updateGroupMessageInDb(thinkingMsgId, thinkingMsg.content, '');
+
+        if (this.pendingGroupReplies.size === 0) {
+          this.messageContext = 'chat';
+        }
+        settle();
+      }, this.GROUP_REPLY_TIMEOUT_MS);
+
       // 添加到待回复 Map
-      this.pendingGroupReplies.set(thinkingMsgId, assistant);
+      this.pendingGroupReplies.set(thinkingMsgId, { assistant, settle, timer });
 
       this.groupMessages.push(thinkingMsg);
       this.renderGroupMessage(thinkingMsg);
@@ -2801,10 +2831,15 @@ class ClawAgent {
         thinkingMsg.content = '连接断开，无法获取回复';
         this.updateGroupMessage(thinkingMsg);
         this.pendingGroupReplies.delete(thinkingMsgId);
+        clearTimeout(timer);
+        settle();
       }
     } catch (error) {
       console.error('生成群聊回复失败:', error);
+      settle();
     }
+
+    return finished;
   }
 
   updateGroupMessage(message) {
