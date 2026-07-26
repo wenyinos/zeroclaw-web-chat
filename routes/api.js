@@ -676,6 +676,11 @@ router.post('/api/memories', requireVerifiedSession, (req, res) => {
     return res.status(400).json({ success: false, error: '标题和内容不能为空' });
   }
 
+  // 置顶记忆会随每条消息发给 Gateway，且每次写入都会全量重写数据库
+  if (content.length > 100 * 1024) {
+    return res.status(400).json({ success: false, error: '记忆内容不能超过 100KB' });
+  }
+
   const memory = {
     id: `mem-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     title,

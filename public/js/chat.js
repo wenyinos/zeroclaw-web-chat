@@ -39,6 +39,9 @@ class ClawAgent {
     this.currentAssistant = null;
     this.groupMessages = [];
 
+    // 置顶记忆（作为长期记忆随消息发送）
+    this.pinnedMemories = [];
+
     // 贴纸状态
     this.stickersLoaded = false;
 
@@ -165,6 +168,8 @@ class ClawAgent {
       memoryList: document.getElementById('memoryList'),
       memorySearchInput: document.getElementById('memorySearchInput'),
       addMemoryBtn: document.getElementById('addMemoryBtn'),
+      uploadMemoryBtn: document.getElementById('uploadMemoryBtn'),
+      memoryUploadInput: document.getElementById('memoryUploadInput'),
 
       // 设置
       userNameInput: document.getElementById('userNameInput'),
@@ -354,6 +359,9 @@ class ClawAgent {
     // 加载设置和助手配置
     this.loadSettings();
     this.loadAssistants();
+
+    // 预载置顶记忆，首条消息也能带上长期记忆
+    this.refreshPinnedMemories();
 
     // 加载历史消息
     this.loadChatHistory();
@@ -1144,6 +1152,9 @@ class ClawAgent {
       return;
     }
 
+    // 置顶记忆作为长期记忆，随本次发送一并带上
+    const memoryPrompt = this.buildMemoryPrompt();
+
     // 如果有草稿，发送所有草稿
     if (this.drafts.length > 0) {
       for (const draft of this.drafts) {
@@ -1153,7 +1164,7 @@ class ClawAgent {
           const context = this.getContextMessages(20);
           this.ws.send(JSON.stringify({
             type: 'message',
-            content: draft,
+            content: this.withMemory(draft, memoryPrompt),
             context: context
           }));
           // 保存到后端
@@ -1177,7 +1188,7 @@ class ClawAgent {
         const context = this.getContextMessages(20);
         this.ws.send(JSON.stringify({
           type: 'message',
-          content: content || '',
+          content: this.withMemory(content || '', memoryPrompt),
           images: images,
           context: context
         }));
@@ -2020,6 +2031,81 @@ class ClawAgent {
   }
 
   // ===== 记忆系统 =====
+  // 上传 Markdown 文件作为记忆：文件名做标题，正文做内容
+  async handleMemoryUpload(files) {
+    const list = Array.from(files).filter(f => /\.(md|markdown)$/i.test(f.name));
+    if (list.length === 0) {
+      this.showToast('error', '格式不支持', '请选择 .md 或 .markdown 文件');
+      return;
+    }
+
+    let succeeded = 0;
+    for (const file of list) {
+      try {
+        const content = await file.text();
+        if (!content.trim()) {
+          this.showToast('error', '内容为空', file.name);
+          continue;
+        }
+
+        const response = await fetch('/api/memories', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Id': this.verifiedSessionId
+          },
+          body: JSON.stringify({
+            title: file.name.replace(/\.(md|markdown)$/i, ''),
+            content,
+            tags: ['markdown']
+          })
+        });
+
+        const data = await response.json();
+        if (data.success) {
+          succeeded += 1;
+        } else {
+          this.showToast('error', '导入失败', `${file.name}: ${data.error || '未知错误'}`);
+        }
+      } catch (error) {
+        console.error('上传记忆失败:', error);
+        this.showToast('error', '导入失败', file.name);
+      }
+    }
+
+    if (succeeded > 0) {
+      this.showToast('success', '导入完成', `已导入 ${succeeded} 个文件，📌 置顶后才会发送给 AI`);
+      this.loadMemories();
+      this.refreshPinnedMemories();
+    }
+  }
+
+  // 缓存置顶记忆，避免每次发消息都请求接口
+  async refreshPinnedMemories() {
+    if (!this.memoryEnabled) {
+      this.pinnedMemories = [];
+      return;
+    }
+    const memories = await this.fetchMemories();
+    this.pinnedMemories = memories.filter(m => m.pinned);
+  }
+
+  // 把置顶记忆拼成前缀注入消息正文。
+  // 不能走 payload.systemPrompt：picoclaw 的 system prompt 取自它自己的 config.json，
+  // 不接受 channel 消息覆盖，content 是唯一确定会送达模型的字段。
+  buildMemoryPrompt() {
+    if (!this.memoryEnabled || this.pinnedMemories.length === 0) return '';
+    const blocks = this.pinnedMemories
+      .map(m => `## ${m.title}\n${m.content}`)
+      .join('\n\n');
+    return `[长期记忆·用户置顶的背景信息，供你参考，无需复述]\n\n${blocks}`;
+  }
+
+  // 记忆只拼进发给 Gateway 的正文，界面上仍显示用户原话
+  withMemory(content, memoryPrompt) {
+    return memoryPrompt ? `${memoryPrompt}\n\n---\n\n${content}` : content;
+  }
+
   async loadMemories() {
     try {
       const response = await fetch('/api/memories', {
@@ -2029,6 +2115,8 @@ class ClawAgent {
 
       if (data.success) {
         this.renderMemoryList(data.memories);
+        // 复用同一次请求刷新置顶缓存，置顶/删除等操作后自动同步
+        this.pinnedMemories = data.memories.filter(m => m.pinned);
       }
     } catch (error) {
       console.error('加载记忆失败:', error);
@@ -3106,6 +3194,15 @@ class ClawAgent {
     // 记忆
     elements.addMemoryBtn.addEventListener('click', () => {
       this.createMemory();
+    });
+    elements.uploadMemoryBtn.addEventListener('click', () => {
+      elements.memoryUploadInput.click();
+    });
+    elements.memoryUploadInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        this.handleMemoryUpload(e.target.files);
+      }
+      e.target.value = '';
     });
 
     // 文档

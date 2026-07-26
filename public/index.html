@@ -294,12 +294,16 @@
                         <div class="avatar memory-avatar">🧠</div>
                         <div class="top-bar-info">
                             <h1 class="top-bar-title">记忆</h1>
-                            <div class="top-bar-subtitle">日记与知识库</div>
+                            <div class="top-bar-subtitle">📌 置顶的记忆会随对话发送给 AI</div>
                         </div>
                     </div>
                     <div class="top-bar-actions">
-                        <button class="btn-primary-sm" id="addMemoryBtn">
-                            + 新建记忆
+                        <button class="btn-primary-sm" id="uploadMemoryBtn">
+                            + 上传 Markdown
+                        </button>
+                        <input type="file" id="memoryUploadInput" accept=".md,.markdown" multiple class="file-input">
+                        <button class="btn-secondary-sm" id="addMemoryBtn">
+                            + 手写记忆
                         </button>
                         <button class="btn-secondary-sm" id="addDocumentBtn">
                             + 上传文档
