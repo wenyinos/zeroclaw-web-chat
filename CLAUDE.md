@@ -27,9 +27,12 @@ npm run dev      # node --watch 热重载
 | 变量 | 来源 | 用途 | 传递方式 |
 |---|---|---|---|
 | `verifiedSessionId` | `/api/verify` 返回，`crypto.randomBytes(16)` | **鉴权凭证**，存在 `lib/sessions.js` 的内存 Map，TTL 12h | HTTP `X-Session-Id` 头 / WS `?auth_session=` |
-| `sessionId` | 前端生成 `session-<ts>-<rand>` | **会话分组键**，即 `chat_messages.session_id` 列 | URL `?session=xxx`，随请求 body 上传 |
+| `sessionId` | 前端生成 `session-<ts>-<rand>` | **私聊会话分组键**，即 `chat_messages.session_id` 列 | URL `?session=xxx`，随请求 body 上传 |
+| `groupSessionId` | 前端生成 `group-<ts>-<rand>` | **群聊会话分组键**，即 `group_messages.session_id` 列 | URL `?group=xxx`，随请求 body 上传 |
 
-前端 `sessionId` 存在 URL 里（分享链接即分享会话），`verifiedSessionId` 存在 sessionStorage。混用会导致「鉴权通过但历史消息为空」或「401」。
+前端两个会话 id 都存在 URL 里（分享链接即分享会话），`verifiedSessionId` 存在 sessionStorage。混用会导致「鉴权通过但历史消息为空」或「401」。
+
+群聊会话与私聊同构（新建/切换/继续/下载/删除），老库迁移时存量消息归入 `group-legacy`。注意「清空聊天」只清当前会话——`DELETE /api/group/messages` 那个老接口会清掉**所有**会话，别再接到 UI 上。
 
 ### 2. WebSocket 协议翻译只在代理层（`lib/ws-proxy.js`）
 
@@ -87,6 +90,10 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 - `initDatabase()` 是异步的，且作为 **`routes/api.js` 的模块副作用**触发。`dbReady` 标志被设置但**没有任何路由检查它**——启动瞬间的请求可能撞上 `db === null`
 
 表：`chat_messages` / `group_messages` / `assistants` / `settings` / `memories` / `documents`。三个默认助手（default / coder / writer）在初始化时 `INSERT OR IGNORE`。
+
+消息查询一律 `ORDER BY created_at DESC, rowid DESC`：`created_at` 只精确到秒，缺了 `rowid` 这个次级键，同秒内的消息顺序不稳定，导出的记录会出现回复排在提问之前。
+
+加列要走 `PRAGMA table_info` 检测 + `ALTER TABLE` 的迁移路径——`CREATE TABLE IF NOT EXISTS` 不会改动已存在的表，只改建表语句对老库无效。
 
 ### 6. 环境变量必须延迟读取
 
