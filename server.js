@@ -43,7 +43,8 @@ app.use(cors({
     return callback(null, false);
   }
 }));
-app.use(express.json());
+// 默认上限 100KB 不够：贴纸 2MB、图片消息、文档都以 base64/长文本走 JSON body
+app.use(express.json({ limit: '5mb' }));
 app.use(express.static(join(__dirname, 'public')));
 
 // 请求日志中间件

@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { log } from '../lib/logger.js';
 import { cleanupExpiredSessions, isSessionValid, sessions, generateSessionId } from '../lib/sessions.js';
@@ -494,36 +495,106 @@ router.get('/api/assistants/default', requireVerifiedSession, (req, res) => {
   return res.json({ success: true, assistant });
 });
 
+// 贴纸以文件形式存放，由 server.js 的 /stickers 静态服务提供访问。
+// 不存数据库：base64 图片会让 sql.js 每次写入全量重写整个 db 文件。
+// 必须与 server.js 的 /stickers 静态服务指向同一目录，
+// 用 __dirname 而非 cwd：从其他目录启动服务时 cwd 并非项目根
+const STICKERS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'stickers');
+const STICKER_FILE_RE = /^[a-zA-Z0-9._-]+\.(png|jpg|gif|webp)$/;
+
+function ensureStickersDir() {
+  if (!fs.existsSync(STICKERS_DIR)) {
+    fs.mkdirSync(STICKERS_DIR, { recursive: true });
+  }
+}
+
+// 解析出磁盘路径，任何越界或非法文件名都返回 null
+function resolveStickerPath(id) {
+  if (typeof id !== 'string' || !STICKER_FILE_RE.test(id)) return null;
+  const filePath = path.join(STICKERS_DIR, id);
+  // 双重保险：确认解析结果仍在贴纸目录内
+  if (path.dirname(path.resolve(filePath)) !== path.resolve(STICKERS_DIR)) return null;
+  return filePath;
+}
+
 // API 路由 - 获取贴纸列表
 router.get('/api/stickers', requireVerifiedSession, (req, res) => {
-  // 从数据库或文件加载贴纸
-  const stickers = [];
+  ensureStickersDir();
+
+  const stickers = fs.readdirSync(STICKERS_DIR)
+    .filter(name => STICKER_FILE_RE.test(name))
+    .map(name => {
+      const stat = fs.statSync(path.join(STICKERS_DIR, name));
+      return {
+        id: name,
+        name: name.replace(/\.[^.]+$/, ''),
+        url: `/stickers/${name}`,
+        createdAt: stat.mtime.toISOString()
+      };
+    })
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
   return res.json({ success: true, stickers });
 });
 
 // API 路由 - 上传贴纸
 router.post('/api/stickers', requireVerifiedSession, (req, res) => {
   const { dataUrl, name } = req.body;
-  if (!dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string') {
     return res.status(400).json({ success: false, error: '缺少贴纸数据' });
   }
 
-  const sticker = {
-    id: `sticker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-    name: name || 'sticker',
-    url: dataUrl,
-    createdAt: new Date().toISOString()
-  };
+  const matched = /^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim());
+  if (!matched) {
+    return res.status(400).json({ success: false, error: '仅支持 png/jpg/gif/webp 图片' });
+  }
 
-  log('info', `贴纸已上传: ${sticker.id}`);
-  return res.json({ success: true, sticker });
+  const buffer = Buffer.from(matched[2], 'base64');
+  if (buffer.length === 0) {
+    return res.status(400).json({ success: false, error: '图片内容为空' });
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    return res.status(400).json({ success: false, error: '贴纸大小不能超过 2MB' });
+  }
+
+  ensureStickersDir();
+
+  const ext = matched[1] === 'jpeg' ? 'jpg' : matched[1];
+  const id = `sticker-${Date.now()}-${Math.random().toString(36).slice(2, 11)}.${ext}`;
+  const filePath = resolveStickerPath(id);
+  if (!filePath) {
+    return res.status(500).json({ success: false, error: '生成贴纸文件名失败' });
+  }
+
+  fs.writeFileSync(filePath, buffer);
+  log('info', `贴纸已上传: ${id} (${buffer.length} 字节)`);
+
+  return res.json({
+    success: true,
+    sticker: {
+      id,
+      name: name ? String(name).replace(/\.[^.]+$/, '') : '贴纸',
+      url: `/stickers/${id}`,
+      createdAt: new Date().toISOString()
+    }
+  });
 });
 
 // API 路由 - 删除贴纸
 router.delete('/api/stickers/:id', requireVerifiedSession, (req, res) => {
-  const { id } = req.params;
-  log('info', `贴纸已删除: ${id}`);
-  return res.json({ success: true, id });
+  const filePath = resolveStickerPath(req.params.id);
+  if (!filePath) {
+    log('warn', `拒绝非法贴纸路径: ${req.params.id}`);
+    return res.status(400).json({ success: false, error: '非法的贴纸标识' });
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, error: '贴纸不存在' });
+  }
+
+  fs.unlinkSync(filePath);
+  log('info', `贴纸已删除: ${req.params.id}`);
+  return res.json({ success: true, id: req.params.id });
 });
 
 // 控制台事件存储（内存中）

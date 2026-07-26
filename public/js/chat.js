@@ -2776,13 +2776,17 @@ class ClawAgent {
         content: `${msg.sender}: ${msg.content}`
       }));
 
-      // 通过 WebSocket 发送到 Gateway，带上助手信息和上下文
+      // 人设必须拼进 content：picoclaw 不采纳 payload.systemPrompt，
+      // 走那个字段的话所有助手都会共用 Gateway 自身的同一套人设
+      const persona = assistant.systemPrompt
+        ? `[你现在扮演「${assistant.name}」，请严格按此设定回复]\n${assistant.systemPrompt}\n\n---\n\n`
+        : '';
+
       const wsMessage = {
         type: 'message',
-        content: `${assistant.name}: ${userContent}`,
+        content: `${persona}${userContent}`,
         scope: 'group',
         assistantId: assistant.id,
-        systemPrompt: assistant.systemPrompt,
         context: groupContext
       };
 
