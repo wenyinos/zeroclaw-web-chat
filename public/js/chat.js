@@ -811,7 +811,8 @@ class ClawAgent {
           this.updateGroupReply(data);
         } else {
           // 私聊消息
-          const message = this.addMessage('assistant', data.content);
+          this.hideTyping();
+          const message = this.addMessage('assistant', data.content, { typewriter: true });
           this.sendNotification('新消息', data.content.substring(0, 100));
           // 保存到后端
           this.saveChatMessage(message);
@@ -832,6 +833,7 @@ class ClawAgent {
         this.hideTyping();
         break;
       case 'error':
+        this.hideTyping();
         this.addSystemMessage(data.message || '发生错误', 'error');
         break;
     }
@@ -897,8 +899,12 @@ class ClawAgent {
     };
 
     this.messages.push(message);
-    this.renderMessage(message);
+    this.renderMessage(message, Boolean(options.typewriter));
     this.scrollToBottom();
+
+    if (options.typewriter) {
+      this.typewriter(message.id, content);
+    }
 
     return message;
   }
@@ -940,7 +946,7 @@ class ClawAgent {
     this.scrollToBottom();
   }
 
-  renderMessage(message) {
+  renderMessage(message, blank = false) {
     const { role, content, timestamp, thinking, images } = message;
     const isMe = role === 'user';
 
@@ -969,7 +975,7 @@ class ClawAgent {
     }
 
     html += `<div class="bubble">`;
-    html += this.renderContent(content);
+    html += `<div class="bubble-text">${blank ? '' : this.renderContent(content)}</div>`;
 
     if (images && images.length > 0) {
       images.forEach(img => {
@@ -1010,8 +1016,12 @@ class ClawAgent {
     // 简单的 Markdown 渲染（粗体、斜体、代码、链接）
     let html = this.escapeHtml(content);
 
-    // 代码块
-    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // 代码块先抽出占位，避免后续换行/行内规则污染块内文本
+    const codeBlocks = [];
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+      codeBlocks.push(`<pre><code>${code}</code></pre>`);
+      return `<!--CODE${codeBlocks.length - 1}-->`;
+    });
 
     // 行内代码
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -1028,6 +1038,9 @@ class ClawAgent {
     // 换行
     html = html.replace(/\n/g, '<br>');
 
+    // 还原代码块（占位符在换行替换后仍然完整）
+    html = html.replace(/<!--CODE(\d+)-->/g, (match, index) => codeBlocks[index]);
+
     return html;
   }
 
@@ -1043,11 +1056,65 @@ class ClawAgent {
   }
 
   showTyping() {
-    // 显示输入中动画
+    if (document.getElementById('typingIndicator')) return;
+    if (this.elements.welcomeMessage) {
+      this.elements.welcomeMessage.style.display = 'none';
+    }
+    this.elements.messagesWrapper.insertAdjacentHTML('beforeend', `
+      <div class="message-row" id="typingIndicator">
+        <div class="avatar">C</div>
+        <div class="msg-col">
+          <div class="bubble typing-bubble">
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+          </div>
+        </div>
+      </div>
+    `);
+    this.scrollToBottom();
   }
 
   hideTyping() {
-    // 隐藏输入中动画
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) indicator.remove();
+  }
+
+  // 逐字渲染已收到的完整回复，减少长文本的突兀感
+  typewriter(messageId, text) {
+    this.stopTypewriter();
+    const target = document.querySelector(`[data-message-id="${messageId}"] .bubble-text`);
+    if (!target) return;
+
+    // 步长随文本长度放大，保证整体约 2 秒内完成
+    const step = Math.max(1, Math.ceil(text.length / 80));
+    let cursor = 0;
+
+    const tick = () => {
+      // 会话被切换/清空时目标已脱离文档，直接停止
+      if (!target.isConnected) {
+        this.typewriterTimer = null;
+        return;
+      }
+      cursor = Math.min(cursor + step, text.length);
+      target.innerHTML = this.renderContent(text.slice(0, cursor));
+      this.scrollToBottom();
+
+      if (cursor < text.length) {
+        this.typewriterTimer = setTimeout(tick, 25);
+      } else {
+        this.typewriterTimer = null;
+      }
+    };
+
+    tick();
+  }
+
+  stopTypewriter() {
+    if (this.typewriterTimer) {
+      clearTimeout(this.typewriterTimer);
+      this.typewriterTimer = null;
+    }
   }
 
   scrollToBottom(scope = 'chat') {
@@ -1125,6 +1192,9 @@ class ClawAgent {
 
     input.value = '';
     input.style.height = 'auto';
+
+    // 不依赖 Gateway 的 typing 事件，发送后立即给出等待反馈
+    this.showTyping();
   }
 
   getContextMessages(limit = 20) {

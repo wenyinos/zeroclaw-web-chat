@@ -673,6 +673,65 @@ textarea {
   content: "💭 ";
 }
 
+/* 代码块与行内代码 */
+.bubble pre {
+  background: var(--panel-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: .6rem .75rem;
+  margin: .4rem 0;
+  overflow-x: auto;
+}
+
+.bubble pre code {
+  background: none;
+  padding: 0;
+  font-size: .85rem;
+  line-height: 1.45;
+}
+
+.bubble code {
+  background: var(--panel-soft);
+  border-radius: 4px;
+  padding: .1rem .3rem;
+  font-size: .85rem;
+}
+
+/* 输入中指示器 */
+.typing-bubble {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  padding: .75rem .85rem;
+}
+
+.typing-dot {
+  width: .45rem;
+  height: .45rem;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: typingBounce 1.2s infinite ease-in-out;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: .15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: .3s;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: .4;
+  }
+  30% {
+    transform: translateY(-.25rem);
+    opacity: 1;
+  }
+}
+
 /* 图片消息 */
 .msg-image {
   max-width: 300px;

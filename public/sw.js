@@ -1,7 +1,7 @@
 // ZeroClaw Web Chat - Service Worker
 // PWA 支持，缓存静态资源
 
-const CACHE_NAME = 'claw-agent-v1';
+const CACHE_NAME = 'claw-agent-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -34,7 +34,8 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// 请求事件 - 缓存优先策略
+// 请求事件 - 网络优先，离线回退缓存
+// 不能用缓存优先：HTML/CSS/JS 更新后用户会长期停留在旧版本
 self.addEventListener('fetch', (event) => {
   const { request } = event;
 
@@ -48,37 +49,22 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 缓存优先策略
   event.respondWith(
-    caches.match(request)
-      .then(cached => {
-        if (cached) {
-          // 返回缓存，同时更新缓存
-          const fetchPromise = fetch(request)
-            .then(response => {
-              if (response && response.status === 200) {
-                const cache = caches.open(CACHE_NAME);
-                cache.then(c => c.put(request, response.clone()));
-              }
-              return response;
-            })
-            .catch(() => {});
-
-          return cached;
+    fetch(request)
+      .then(response => {
+        // 拿到新版本就写回缓存，供离线时使用
+        if (response && response.status === 200) {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME)
+            .then(cache => cache.put(request, responseClone));
         }
-
-        // 没有缓存，从网络获取
-        return fetch(request)
-          .then(response => {
-            if (response && response.status === 200) {
-              const responseClone = response.clone();
-              caches.open(CACHE_NAME)
-                .then(cache => cache.put(request, responseClone));
-            }
-            return response;
-          })
-          .catch(() => {
-            // 离线时返回离线页面
+        return response;
+      })
+      .catch(() => {
+        // 离线：回退到缓存，文档请求兜底到首页
+        return caches.match(request)
+          .then(cached => {
+            if (cached) return cached;
             if (request.destination === 'document') {
               return caches.match('/index.html');
             }
