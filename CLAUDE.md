@@ -49,8 +49,8 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 **⚠️ `payload.systemPrompt` 不被 picoclaw 采纳**（已实测验证）。picoclaw 的 system prompt 取自它自己的 `~/.picoclaw/config.json`，不接受 channel 消息覆盖——代理里那段透传是前端单方面的约定。后果：
 
-- 想让模型读到额外背景（长期记忆等），**只能拼进 `content`**，那是唯一确定送达模型的字段。私聊的置顶记忆注入就是这么做的（`withMemory()`）
-- **群聊的助手人设同样从未生效过**——`generateGroupReply()` 用的正是这个字段，所以多个助手实际共用 picoclaw 的同一套人设，回复风格不会因助手而异。要真正区分，同样得把人设拼进 content
+- 想让模型读到额外背景（长期记忆、助手人设），**只能拼进 `content`**，那是唯一确定送达模型的字段
+- 现有两处都已这么做：私聊的置顶记忆走 `withMemory()`，群聊的助手人设在 `generateGroupReply()` 里拼成 `[你现在扮演「X」…]` 前缀。**不要"优化"回 `systemPrompt` 字段**，那等于让所有助手退回共用 Gateway 自身人设
 
 其他：Gateway 未就绪时消息进 `pendingMessages` 队列，`open` 后补发；双向 ping/pong 保活（`WS_KEEPALIVE_INTERVAL_MS`，默认 25s，连续 6 次未响应主动断开）。
 
@@ -65,7 +65,15 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 群聊消息的两段式落库：先以「正在思考...」占位调 `POST /api/group/reply` 存库，收到真实内容后再 `PUT /api/group/messages/:id` 覆盖。
 
-### 4. sql.js 数据库：每次写入全量重写文件
+### 4. 二进制内容不进数据库
+
+贴纸存为 `data/stickers/` 下的文件，由 `server.js` 的 `/stickers` 静态服务提供访问；`routes/api.js` 只做目录扫描与写文件。**不要改成存进数据库**——base64 图片会让下面第 5 条的「每次写入全量重写」变成灾难。
+
+两处目录定义必须一致（都用 `__dirname` 相对定位，不能用 `process.cwd()`，否则从别的目录启动服务时写入与读取会分叉）。删除接口的 `id` 必须过文件名白名单 + 目录归属校验。
+
+`express.json` 的上限是 **5MB** 而非默认 100KB，贴纸/图片消息/文档都靠它；调小会让这些功能在到达业务校验前就以 500 失败。
+
+### 5. sql.js 数据库：每次写入全量重写文件
 
 `lib/database.js` 用的是 **sql.js（WASM 内存数据库）**，不是 better-sqlite3（9f2ac6e 之前是）。关键后果：
 
@@ -76,7 +84,7 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 表：`chat_messages` / `group_messages` / `assistants` / `settings` / `memories` / `documents`。三个默认助手（default / coder / writer）在初始化时 `INSERT OR IGNORE`。
 
-### 5. 环境变量必须延迟读取
+### 6. 环境变量必须延迟读取
 
 `server.js` 里 `dotenv.config()` 在 import 之后执行，所以模块顶层读 `process.env` 会拿到 undefined。既有代码用两种方式规避：
 
@@ -85,7 +93,7 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 **不要把 env 读取提升到模块顶层。**
 
-### 6. 前端：单个 3400 行 `ClawAgent` 类
+### 7. 前端：单个 3400 行 `ClawAgent` 类
 
 `public/js/chat.js` 一个类装下全部逻辑，实例挂在 `window.app`——因为模板里大量使用内联 `onclick="app.xxx()"`，重命名方法会静默断链。
 
@@ -95,15 +103,14 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 记忆的工作方式：`.md` 文件上传后存进 `memories` 表（文件名作标题），**只有置顶（`pinned`）的记忆**会被 `buildMemoryPrompt()` 拼成前缀注入消息正文。`loadMemories()` 顺带刷新 `pinnedMemories` 缓存，所以置顶/删除后无需额外请求。界面显示的始终是用户原话，拼接只发生在发往 Gateway 的载荷里。
 
-### 7. Service Worker 必须保持网络优先
+### 8. Service Worker 必须保持网络优先
 
 `public/sw.js` 曾是缓存优先，导致 HTML/CSS/JS 改完后用户长期停在旧版本（后台回写没有 `waitUntil` 保护，SW 可能在写回前被终止）。现为**网络优先、离线回退缓存**。
 
 改这里要注意：一旦改回缓存优先，前端任何更新都不会送达用户，而本地开发也会看到「代码改了页面没变」的假象。
 
-### 8. 已知的空实现 / 死代码（别当成能用的功能）
+### 9. 已知的空实现 / 死代码（别当成能用的功能）
 
-- `GET /api/stickers` 恒返回空数组；`POST /api/stickers` 不落库。贴纸面板只有内置 emoji 可用，上传的贴纸刷新即失
 - `routes/api.js` 的 `sessionRecords` Map 未使用
 - `lib/utils.js` 的 `ensureChatRecordsDir` / `CHAT_RECORDS_DIR` / `escapeMarkdown` / `formatDateTimeText` 是 SQLite 迁移前的遗留，无引用（`buildSessionMarkdown` 已在会话导出中启用）
 - 控制台事件存在内存数组（上限 1000），重启即失
