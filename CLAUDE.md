@@ -61,7 +61,11 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 - `this.messageContext`（`'chat'` | `'group'`）— `handleMessage()` 据此决定消息进私聊还是群聊
 - `this.pendingGroupReplies`（`Map<thinkingMsgId, assistant>`）— 群聊待回复队列
 
-**群聊回复是 FIFO 按序匹配的**（`updateGroupReply()` 取 `entries[0]`），不是按消息 ID 匹配。多助手并发回复时若 Gateway 乱序返回，回复会串到错误的助手名下。全部回复完毕后 `messageContext` 复位为 `'chat'`。动 `handleMessage` / `generateGroupReply` 前先理解这套机制。
+**群聊回复必须串行，不能并发**。一条 WS = picoclaw 的一个 agent session；实测同时发 3 条请求，Gateway 只产出 1 条 `message`，其余只回 `thought`（走 `updateGroupThinking()`，不消费等待队列），那些助手就永远停在「正在思考...」。所以 `generateGroupReply()` 要等本轮回复落地才 resolve，调用方逐个 `await`。**不要"优化"成 `Promise.all`**。
+
+配套的 90s 超时兜底也不能删：Gateway 只回 thought 时没有任何信号能结束等待，没有超时就会永久挂起。
+
+**回复是 FIFO 按序匹配的**（`updateGroupReply()` 取 `entries[0]`），不看消息 ID。串行后队列里同时只有一项，所以匹配是准的——一旦改回并发，除了上面的卡死，回复还会串到错误的助手名下。全部回复完毕后 `messageContext` 复位为 `'chat'`。
 
 群聊消息的两段式落库：先以「正在思考...」占位调 `POST /api/group/reply` 存库，收到真实内容后再 `PUT /api/group/messages/:id` 覆盖。
 
