@@ -838,10 +838,10 @@ class ClawAgent {
           // 群聊回复 - 更新对应的助手消息
           this.updateGroupReply(data);
         } else {
-          // 私聊消息
+          // 私聊消息（完整回复，代理层已缓冲，无需打字机）
           this.hideTyping();
           this.setBusy(false);
-          const message = this.addMessage('assistant', data.content, { typewriter: true });
+          const message = this.addMessage('assistant', data.content);
           this.sendNotification('新消息', data.content.substring(0, 100));
           // 保存到后端
           this.saveChatMessage(message);
