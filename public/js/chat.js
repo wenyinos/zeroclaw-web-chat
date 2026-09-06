@@ -30,9 +30,15 @@ class ClawAgent {
     // 当前标签页
     this.currentTab = 'chat';
 
-    // 消息上下文：用于区分私聊/群聊回复
-    this.messageContext = 'chat'; // 'chat' 或 'group'
+    // 群聊待回复表：每个助手的回复经各自独立 WebSocket 返回，按消息 id 精确匹配
     this.pendingGroupReplies = new Map(); // Map<thinkingMsgId, { assistant, settle, timer }>
+    // 在途私聊回复所属的会话（sendMessage 时记录，回复到达时比对，防跨会话串扰）
+    this.directReplySessionId = null;
+    // 自动记忆提取的节流时间戳
+    this.lastMemoryExtractAt = 0;
+    // 本设备标识：群聊 gw_session 携带，多端开同一群聊会话时各自独立网关会话，
+    // 避免网关把一条回复广播串进另一端的占位（picoclaw 记忆本为渠道级全局共享，无隔离损失）
+    this.clientId = Math.random().toString(36).slice(2, 6);
 
     // 助手配置
     this.assistants = [];
@@ -164,6 +170,7 @@ class ClawAgent {
       groupHistorySessionSelect: document.getElementById('groupHistorySessionSelect'),
       groupRefreshHistoryBtn: document.getElementById('groupRefreshHistoryBtn'),
       groupHistoryDownloadBtn: document.getElementById('groupHistoryDownloadBtn'),
+      exportDbBtn: document.getElementById('exportDbBtn'),
       groupHistoryResumeBtn: document.getElementById('groupHistoryResumeBtn'),
       groupHistoryDeleteBtn: document.getElementById('groupHistoryDeleteBtn'),
       groupHistoryMeta: document.getElementById('groupHistoryMeta'),
@@ -391,13 +398,17 @@ class ClawAgent {
   }
 
   async loadChatHistory() {
+    // 记录发起时的会话：响应回来若已切会话，丢弃过期数据防串视图
+    const requestSessionId = this.sessionId;
     try {
       // 加载私聊历史消息（使用 sessionId）
-      const chatResponse = await fetch(`/api/chat/messages?limit=80&session_id=${this.sessionId}`, {
+      // 上限与后端导出一致（500），避免界面可见条数少于导出内容
+      const chatResponse = await fetch(`/api/chat/messages?limit=500&session_id=${this.sessionId}`, {
         headers: { 'X-Session-Id': this.verifiedSessionId }
       });
       const chatData = await chatResponse.json();
 
+      if (requestSessionId !== this.sessionId) return;
       if (chatData.success && chatData.messages.length > 0) {
         this.messages = chatData.messages;
         this.renderMessages();
@@ -605,6 +616,10 @@ class ClawAgent {
       if (data.stickers) {
         this.renderStickerGrid(data.stickers);
       }
+
+      // snapshot 在每次 SSE（重）连上时都会发：借机补拉断连窗口内其它端发来的消息。
+      // loadChatHistory 是整体替换式渲染，幂等
+      this.loadChatHistory();
     });
 
     this.eventSource.addEventListener('message', (e) => {
@@ -828,32 +843,40 @@ class ClawAgent {
   }
 
   // ===== 消息处理 =====
+  // 仅处理主连接（私聊）的消息；群聊各助手走独立连接，由各自回调处理
   handleMessage(data) {
-    // 根据消息上下文决定路由
-    const scope = this.messageContext || 'chat';
-
     switch (data.type) {
       case 'message':
-        if (scope === 'group' && this.pendingGroupReplies.size > 0) {
-          // 群聊回复 - 更新对应的助手消息
-          this.updateGroupReply(data);
-        } else {
-          // 私聊消息（完整回复，代理层已缓冲，无需打字机）
-          this.hideTyping();
-          this.setBusy(false);
-          const message = this.addMessage('assistant', data.content);
-          this.sendNotification('新消息', data.content.substring(0, 100));
-          // 保存到后端
-          this.saveChatMessage(message);
+        // 空内容帧（网关渠道广播的流式首帧等）不入库不渲染
+        if (!data.content || !data.content.trim()) break;
+        // 完整回复（代理层已缓冲，无需打字机）
+        this.hideTyping();
+        this.setBusy(false);
+        if (this.directReplySessionId && this.directReplySessionId !== this.sessionId) {
+          // 提问后用户已切换私聊会话：回复落库到原会话，不污染当前视图
+          const originSession = this.directReplySessionId;
+          this.directReplySessionId = null;
+          const stray = {
+            id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            role: 'assistant',
+            content: data.content,
+            thinking: ''
+          };
+          this.saveChatMessage(stray, originSession);
+          this.showToast('info', '收到此前会话的回复', `已保存到原会话：${data.content.substring(0, 40)}...`);
+          break;
         }
+        this.directReplySessionId = null;
+        const message = this.addMessage('assistant', data.content);
+        this.sendNotification('新消息', data.content.substring(0, 100));
+        // 保存到后端
+        this.saveChatMessage(message);
+        // 自动记忆提取：分析本轮对话是否有值得长期记住的用户信息
+        const lastUser = [...this.messages].reverse().find(m => m.role === 'user');
+        if (lastUser) this.maybeExtractMemory(lastUser.content, data.content);
         break;
       case 'thinking':
-        if (scope === 'group') {
-          // 群聊思考状态
-          this.updateGroupThinking(data);
-        } else {
-          this.showThinking(data.content);
-        }
+        this.showThinking(data.content);
         break;
       case 'typing.start':
         this.showTyping();
@@ -869,12 +892,14 @@ class ClawAgent {
     }
   }
 
-  updateGroupReply(data) {
-    // 从 pendingGroupReplies 中取出第一个待回复的助手
-    const entries = Array.from(this.pendingGroupReplies.entries());
-    if (entries.length === 0) return;
-
-    const [thinkingMsgId, pending] = entries[0];
+  // 群聊回复落地：按占位消息 id 精确匹配（并发下各回复来自各自连接）
+  completeGroupReply(thinkingMsgId, data) {
+    const pending = this.pendingGroupReplies.get(thinkingMsgId);
+    if (!pending) {
+      // 迟到的回复（会话已切换、Map 已被清）：占位仍在库中，直接落库避免残留
+      this.updateGroupMessageInDb(thinkingMsgId, data.content, '');
+      return;
+    }
     const { assistant, settle, timer } = pending;
     this.pendingGroupReplies.delete(thinkingMsgId);
     clearTimeout(timer);
@@ -909,26 +934,35 @@ class ClawAgent {
       this.updateGroupMessageInDb(thinkingMsgId, data.content, data.thinking);
     }
 
-    // 如果所有助手都回复完了，重置上下文
-    if (this.pendingGroupReplies.size === 0) {
-      this.messageContext = 'chat';
-    }
-
-    // 放行：调用方据此发起下一个助手
+    // 放行等待方
     settle();
   }
 
-  updateGroupThinking(data) {
-    // 可以显示思考动画
-    console.log('🤔 助手思考中:', data.content);
+  // 群聊回复失败：占位消息标错误并放行等待方
+  failGroupReply(thinkingMsgId, reason) {
+    const pending = this.pendingGroupReplies.get(thinkingMsgId);
+    if (!pending) return;
+    const { settle, timer } = pending;
+    this.pendingGroupReplies.delete(thinkingMsgId);
+    clearTimeout(timer);
+
+    const thinkingMsg = this.groupMessages.find(m => m.id === thinkingMsgId);
+    if (thinkingMsg) {
+      thinkingMsg.content = reason;
+      this.updateGroupMessage(thinkingMsg);
+      this.updateGroupMessageInDb(thinkingMsgId, thinkingMsg.content, '');
+    }
+    settle();
   }
 
   addMessage(role, content, options = {}) {
     const message = {
-      id: options.id || `msg-${Date.now()}`,
+      // 随机后缀防同毫秒并发撞 id
+      id: options.id || `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role,
       content,
-      timestamp: new Date().toISOString(),
+      // 优先用消息自带时间（如 SSE 广播的原始发送时刻），本地生成的才取当前时间
+      timestamp: options.timestamp || new Date().toISOString(),
       thinking: options.thinking,
       images: options.images,
     };
@@ -1270,6 +1304,11 @@ class ClawAgent {
       return;
     }
 
+    // 记录本次提问所属的私聊会话：回复到达时据此判断是否已切换会话，
+    // 避免旧会话的回答渲染/落库到新会话（主连接协议无法逐请求关联回复，
+    // 且网关对同连接并发请求是覆盖式处理，单值绑定已覆盖实际场景）
+    this.directReplySessionId = this.sessionId;
+
     // 置顶记忆作为长期记忆，随本次发送一并带上
     const memoryPrompt = this.buildMemoryPrompt();
 
@@ -1336,9 +1375,9 @@ class ClawAgent {
     }));
   }
 
-  async saveChatMessage(message) {
+  async saveChatMessage(message, targetSessionId) {
     try {
-      await fetch('/api/chat/send', {
+      const response = await fetch('/api/chat/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1347,7 +1386,8 @@ class ClawAgent {
         body: JSON.stringify({
           // 带上本地 id，否则后续删除/收藏会因前后端 id 不一致而静默失效
           id: message.id,
-          sessionId: this.sessionId,
+          // 缺省存当前会话；跨会话迟到回复显式指定原会话
+          sessionId: targetSessionId || this.sessionId,
           content: message.content,
           role: message.role,
           thinking: message.thinking,
@@ -1355,14 +1395,20 @@ class ClawAgent {
           parentMsgId: message.parentMsgId
         })
       });
+      // 私聊消息仅由前端代存，落库失败意味着刷新后丢失，必须提示
+      if (!response.ok) {
+        console.error('保存消息失败:', response.status, await response.text().catch(() => ''));
+        this.showToast('error', '保存失败', '消息未能持久化，刷新后将丢失');
+      }
     } catch (error) {
       console.error('保存消息失败:', error);
+      this.showToast('error', '保存失败', '网络异常，消息未能持久化');
     }
   }
 
   async saveGroupMessage(message) {
     try {
-      await fetch('/api/group/reply', {
+      const response = await fetch('/api/group/reply', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1378,6 +1424,9 @@ class ClawAgent {
           thinking: message.thinking
         })
       });
+      if (!response.ok) {
+        console.error('保存群聊消息失败:', response.status, await response.text().catch(() => ''));
+      }
     } catch (error) {
       console.error('保存群聊消息失败:', error);
     }
@@ -1385,7 +1434,7 @@ class ClawAgent {
 
   async updateGroupMessageInDb(messageId, content, thinking) {
     try {
-      await fetch(`/api/group/messages/${messageId}`, {
+      const response = await fetch(`/api/group/messages/${messageId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1393,6 +1442,10 @@ class ClawAgent {
         },
         body: JSON.stringify({ content, thinking })
       });
+      // 404 = 占位已被用户删除，属正常；其余失败要留痕
+      if (!response.ok && response.status !== 404) {
+        console.error('更新群聊消息失败:', response.status, await response.text().catch(() => ''));
+      }
     } catch (error) {
       console.error('更新群聊消息失败:', error);
     }
@@ -2006,6 +2059,30 @@ class ClawAgent {
     URL.revokeObjectURL(url);
   }
 
+  // 导出聊天记录：直接下载服务端的 SQLite 数据库整库文件
+  async downloadChatDatabase() {
+    try {
+      const response = await fetch('/api/export/database', {
+        headers: { 'X-Session-Id': this.verifiedSessionId }
+      });
+      if (!response.ok) {
+        this.showToast('error', '导出失败', '无法读取数据库文件，请稍后重试');
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `chat-records-${new Date().toISOString().slice(0, 10)}.db`;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.showToast('success', '已导出', '聊天记录数据库已开始下载');
+    } catch (error) {
+      console.error('导出聊天记录失败:', error);
+      this.showToast('error', '导出失败', error.message);
+    }
+  }
+
   async resumeGroupSession() {
     const sessionId = this.elements.groupHistorySessionSelect.value;
     if (!sessionId) {
@@ -2404,17 +2481,160 @@ class ClawAgent {
   // 把置顶记忆拼成前缀注入消息正文。
   // 不能走 payload.systemPrompt：picoclaw 的 system prompt 取自它自己的 config.json，
   // 不接受 channel 消息覆盖，content 是唯一确定会送达模型的字段。
+  // 每条带更新时间供模型判断时效；总量超限截断，防止挤占回复 token。
   buildMemoryPrompt() {
     if (!this.memoryEnabled || this.pinnedMemories.length === 0) return '';
-    const blocks = this.pinnedMemories
-      .map(m => `## ${m.title}\n${m.content}`)
-      .join('\n\n');
-    return `[长期记忆·用户置顶的背景信息，供你参考，无需复述]\n\n${blocks}`;
+    const MAX_CHARS = 4000;
+    let total = 0;
+    let truncated = false;
+    const blocks = [];
+    for (const m of this.pinnedMemories) {
+      const date = m.updatedAt ? new Date(m.updatedAt).toLocaleDateString('zh-CN') : '未知时间';
+      const block = `## ${m.title}（更新于 ${date}）\n${m.content}`;
+      if (total + block.length > MAX_CHARS) {
+        truncated = true;
+        break;
+      }
+      blocks.push(block);
+      total += block.length;
+    }
+    if (blocks.length === 0) return '';
+    if (truncated) {
+      console.warn(`置顶记忆总量超过 ${MAX_CHARS} 字符已截断，请精简置顶记忆`);
+    }
+    const head = '[长期记忆·用户置顶的背景信息（用户确认的最新信息，优先于你既有印象），供你参考，无需复述]';
+    const tail = truncated ? '\n\n[部分记忆因过长未注入]' : '';
+    return `${head}\n\n${blocks.join('\n\n')}${tail}`;
   }
 
   // 记忆只拼进发给 Gateway 的正文，界面上仍显示用户原话
   withMemory(content, memoryPrompt) {
     return memoryPrompt ? `${memoryPrompt}\n\n---\n\n${content}` : content;
+  }
+
+  // ===== 自动记忆提取 =====
+  // 私聊回复落地后，让网关分析本轮对话是否有值得长期记住的用户信息，
+  // 命中则弹确认卡片（绝不静默入库）。任何失败都静默忽略，不影响主流程。
+  async maybeExtractMemory(userContent, assistantReply) {
+    if (!this.memoryEnabled || !userContent || !assistantReply) return;
+    const now = Date.now();
+    if (now - this.lastMemoryExtractAt < 60000) return; // 节流：60 秒最多一次
+    this.lastMemoryExtractAt = now;
+
+    try {
+      const prompt = '请分析这段对话，判断是否包含值得长期记住的用户个人信息（姓名、职业、偏好、计划、重要事实等）。'
+        + '只提取关于用户本人的稳定信息，不要提取临时性内容或对话细节。'
+        + '注意：即使对话中助手已表示会记住或已执行相关操作，用户陈述的个人信息仍应提取（本提取结果供用户核对管理）。'
+        + '若有，严格只输出 JSON 数组：[{"title":"简短标题","content":"记忆内容"}]，没有则输出 []。\n\n'
+        + `【对话】\n用户：${userContent}\n助手：${assistantReply}`;
+      const reply = await this.askGatewayOnce(prompt, 'mem');
+      const candidates = this.parseMemoryCandidates(reply);
+      if (candidates.length > 0) {
+        this.showMemorySuggestions(candidates);
+      }
+    } catch (error) {
+      console.warn('记忆提取失败（已忽略）:', error.message);
+    }
+  }
+
+  // 独立临时连接问网关一次（专用 gw_session，不占用主连接）
+  askGatewayOnce(content, gwPrefix) {
+    return new Promise((resolve, reject) => {
+      const gwSession = `${gwPrefix}-${this.clientId}`;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${protocol}//${window.location.host}/ws/chat` +
+        `?auth_session=${this.verifiedSessionId}&gw_session=${encodeURIComponent(gwSession)}`;
+      const ws = new WebSocket(url);
+      const timer = setTimeout(() => {
+        try { ws.close(); } catch { /* 忽略关闭异常 */ }
+        reject(new Error('提取超时'));
+      }, 60000);
+      ws.onopen = () => ws.send(JSON.stringify({ type: 'message', content, scope: 'chat' }));
+      ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'message' && typeof data.content === 'string' && data.content.length > 0) {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* 忽略关闭异常 */ }
+          resolve(data.content);
+        } else if (data.type === 'error') {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* 忽略关闭异常 */ }
+          reject(new Error(data.message || '网关错误'));
+        }
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error('连接失败'));
+      };
+    });
+  }
+
+  // 容错解析网关输出中的记忆候选 JSON 数组
+  parseMemoryCandidates(text) {
+    if (!text) return [];
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    try {
+      const arr = JSON.parse(match[0]);
+      return (Array.isArray(arr) ? arr : [])
+        .filter(item => item && typeof item.title === 'string' && item.title.trim()
+          && typeof item.content === 'string' && item.content.trim())
+        .slice(0, 3);
+    } catch {
+      return [];
+    }
+  }
+
+  showMemorySuggestions(candidates) {
+    candidates.forEach((candidate, i) => {
+      setTimeout(() => this.showMemorySuggestionCard(candidate), i * 600);
+    });
+  }
+
+  // 确认卡片：用户手动决定是否入库，默认置顶（注入只认置顶记忆）
+  showMemorySuggestionCard(candidate) {
+    if (document.querySelector('.memory-suggestion')) return; // 上一张还没处理，跳过
+    const card = document.createElement('div');
+    card.className = 'memory-suggestion';
+    card.innerHTML = `
+      <div class="memory-suggestion-header">🧠 发现可记忆的信息</div>
+      <div class="memory-suggestion-body">
+        <strong>${this.escapeHtml(candidate.title)}</strong>
+        <p>${this.escapeHtml(candidate.content)}</p>
+      </div>
+      <div class="memory-suggestion-actions">
+        <button class="ms-save">保存并置顶</button>
+        <button class="ms-ignore">忽略</button>
+      </div>
+    `;
+    const remove = () => card.remove();
+    card.querySelector('.ms-ignore').addEventListener('click', remove);
+    card.querySelector('.ms-save').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/memories', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Id': this.verifiedSessionId
+          },
+          body: JSON.stringify({ title: candidate.title, content: candidate.content, pinned: true })
+        });
+        const data = await response.json();
+        if (data.success) {
+          this.showToast('success', '已保存', '记忆已置顶，将在后续对话中生效');
+          this.refreshPinnedMemories();
+        } else {
+          this.showToast('error', '保存失败', data.error || '未知错误');
+        }
+      } catch (error) {
+        console.error('保存自动记忆失败:', error);
+        this.showToast('error', '保存失败', '网络异常');
+      }
+      remove();
+    });
+    document.body.appendChild(card);
+    setTimeout(remove, 30000); // 长期不处理自动消失
   }
 
   async loadMemories() {
@@ -2816,17 +3036,17 @@ class ClawAgent {
         const mentionedAssistants = this.parseMentionedAssistants(content);
 
         if (mentionedAssistants.length > 0) {
-          // 有 @提及，只有被@的助手回复
-          for (const assistant of mentionedAssistants) {
-            await this.generateGroupReply(content, assistant, data.message.id);
-          }
+          // 有 @提及，被@的助手并发回复（各自独立 WebSocket + 独立网关会话）
+          await Promise.all(mentionedAssistants.map(
+            assistant => this.generateGroupReply(content, assistant, data.message.id)
+          ));
         } else {
-          // 没有 @提及，所有助手依次回复。
-          // 不能并发：同一条 WS 对应 picoclaw 的同一个 session，
-          // 并发只会拿到一条回复，其余助手永远卡在「正在思考...」
-          for (const assistant of this.assistants) {
-            await this.generateGroupReply(content, assistant, data.message.id);
-          }
+          // 没有 @提及，所有助手并发回复。
+          // picoclaw 对不同 session_id 并行处理（已实测验证），
+          // 每个助手经独立连接回复，互不覆盖
+          await Promise.all(this.assistants.map(
+            assistant => this.generateGroupReply(content, assistant, data.message.id)
+          ));
         }
       }
     } catch (error) {
@@ -2903,17 +3123,13 @@ class ClawAgent {
     this.hideMentionMenu();
   }
 
-  // 必须等到本轮回复落地才 resolve，调用方据此串行发起下一个助手。
-  // picoclaw 一条连接只对应一个 agent session，并发发多条只会产出一条回复，
-  // 其余请求只吐 thought，占位消息会永远停在「正在思考...」。
+  // 经该助手专属 WebSocket（独立 gw_session）请求回复，回复落地或失败后 resolve。
+  // picoclaw 对不同 session_id 并行处理（已实测），多助手因此可同时回复。
   async generateGroupReply(userContent, assistant, parentMsgId) {
     let settle;
     const finished = new Promise(resolve => { settle = resolve; });
 
     try {
-      // 设置消息上下文为群聊
-      this.messageContext = 'group';
-
       // 创建一个"正在思考"的占位消息
       const thinkingMsgId = `grp-thinking-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
       const thinkingMsg = {
@@ -2933,6 +3149,7 @@ class ClawAgent {
       };
 
       // 超时兜底：Gateway 不回或只回 thought 时，别让占位消息永远转下去
+      let replySocket = null;
       const timer = setTimeout(() => {
         if (!this.pendingGroupReplies.has(thinkingMsgId)) return;
         this.pendingGroupReplies.delete(thinkingMsgId);
@@ -2941,8 +3158,8 @@ class ClawAgent {
         this.updateGroupMessage(thinkingMsg);
         this.updateGroupMessageInDb(thinkingMsgId, thinkingMsg.content, '');
 
-        if (this.pendingGroupReplies.size === 0) {
-          this.messageContext = 'chat';
+        if (replySocket) {
+          try { replySocket.close(); } catch { /* 忽略关闭异常 */ }
         }
         settle();
       }, this.GROUP_REPLY_TIMEOUT_MS);
@@ -2964,29 +3181,58 @@ class ClawAgent {
       }));
 
       // 人设必须拼进 content：picoclaw 不采纳 payload.systemPrompt，
-      // 走那个字段的话所有助手都会共用 Gateway 自身的同一套人设
+      // 走那个字段的话所有助手都会共用 Gateway 自身的同一套人设。
+      // 置顶记忆同样注入，与私聊行为保持一致
       const persona = assistant.systemPrompt
-        ? `[你现在扮演「${assistant.name}」，请严格按此设定回复]\n${assistant.systemPrompt}\n\n---\n\n`
+        ? `[你现在扮演「${assistant.name}」，请严格按此设定回复]\n${assistant.systemPrompt}`
         : '';
+      const memoryPrompt = this.buildMemoryPrompt();
+      const prefix = [persona, memoryPrompt].filter(Boolean).join('\n\n---\n\n');
 
       const wsMessage = {
         type: 'message',
-        content: `${persona}${userContent}`,
+        content: prefix ? `${prefix}\n\n---\n\n${userContent}` : userContent,
         scope: 'group',
         assistantId: assistant.id,
         context: groupContext
       };
 
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify(wsMessage));
-      } else {
-        // WebSocket 未连接，更新消息为错误状态
-        thinkingMsg.content = '连接断开，无法获取回复';
-        this.updateGroupMessage(thinkingMsg);
-        this.pendingGroupReplies.delete(thinkingMsgId);
-        clearTimeout(timer);
-        settle();
-      }
+      // 每个助手独立 WebSocket 连接，gw_session 指定网关侧独立会话标识，
+      // 避免 picoclaw 同会话并发互相覆盖；本地鉴权仍用 verifiedSessionId。
+      // 尾部 clientId 区分设备：多端开同一群聊会话时互不覆盖、回复不串占位
+      const gwSession = `grp-${this.groupSessionId}-a${assistant.id}-u${this.clientId}`
+        .replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const replyUrl = `${protocol}//${window.location.host}/ws/chat` +
+        `?auth_session=${this.verifiedSessionId}&gw_session=${encodeURIComponent(gwSession)}`;
+      const socket = new WebSocket(replyUrl);
+      replySocket = socket;
+
+      socket.onopen = () => {
+        socket.send(JSON.stringify(wsMessage));
+      };
+      socket.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'message' && typeof data.content === 'string' && data.content.length > 0) {
+          this.completeGroupReply(thinkingMsgId, data);
+          if (!this.pendingGroupReplies.has(thinkingMsgId)) {
+            try { socket.close(); } catch { /* 忽略关闭异常 */ }
+          }
+        } else if (data.type === 'thinking') {
+          console.log(`🤔 ${assistant.name} 思考中:`, data.content);
+        } else if (data.type === 'error') {
+          this.failGroupReply(thinkingMsgId, data.message || '网关返回错误');
+          try { socket.close(); } catch { /* 忽略关闭异常 */ }
+        }
+      };
+      socket.onerror = () => {
+        this.failGroupReply(thinkingMsgId, '连接失败，无法获取回复');
+      };
+      socket.onclose = () => {
+        // 连接被代理/网关断开而回复未落地时，收敛占位消息
+        this.failGroupReply(thinkingMsgId, '连接断开，未收到该助手的完整回复');
+      };
     } catch (error) {
       console.error('生成群聊回复失败:', error);
       settle();
@@ -3054,19 +3300,34 @@ class ClawAgent {
   }
 
   async loadGroupMessages() {
+    // 记录发起时的群会话：响应回来若已切会话，丢弃过期数据防串视图
+    const requestGroupId = this.groupSessionId;
     try {
-      const response = await fetch(`/api/group/messages?limit=80&session_id=${encodeURIComponent(this.groupSessionId)}`, {
+      const response = await fetch(`/api/group/messages?limit=500&session_id=${encodeURIComponent(this.groupSessionId)}`, {
         headers: { 'X-Session-Id': this.verifiedSessionId }
       });
       const data = await response.json();
 
+      if (requestGroupId !== this.groupSessionId) return;
       if (data.success) {
         this.groupMessages = data.messages;
+        this.cleanStaleThinkingPlaceholders();
         this.renderGroupMessages();
       }
     } catch (error) {
       console.error('加载群聊消息失败:', error);
     }
+  }
+
+  // 清理历史上残留的「正在思考...」占位：回复进行中刷新/断网后，库里的占位没人更新。
+  // 跳过仍在等待中的回复（pendingGroupReplies 里登记的）
+  cleanStaleThinkingPlaceholders() {
+    this.groupMessages.filter(m =>
+      m.content === '正在思考...' && !this.pendingGroupReplies.has(m.id)
+    ).forEach(m => {
+      m.content = '（回复已丢失：发送时页面中断，未收到该助手的回应）';
+      this.updateGroupMessageInDb(m.id, m.content, '');
+    });
   }
 
   renderGroupMessages() {
@@ -3508,6 +3769,7 @@ class ClawAgent {
     });
     elements.groupRefreshHistoryBtn.addEventListener('click', () => this.loadGroupHistory());
     elements.groupHistoryDownloadBtn.addEventListener('click', () => this.downloadGroupSession());
+    elements.exportDbBtn.addEventListener('click', () => this.downloadChatDatabase());
     elements.groupHistoryResumeBtn.addEventListener('click', () => this.resumeGroupSession());
     elements.groupHistoryDeleteBtn.addEventListener('click', () => this.deleteGroupSession());
 

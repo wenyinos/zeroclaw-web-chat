@@ -1759,6 +1759,66 @@ button:active:not(:disabled) {
   border-left: 3px solid var(--danger);
 }
 
+/* 自动记忆提取确认卡片 */
+.memory-suggestion {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent-2);
+    border-radius: var(--radius);
+    padding: 1rem;
+    box-shadow: var(--shadow-lg);
+    z-index: 1000;
+    max-width: 320px;
+    animation: slideInRight .3s ease-out;
+}
+
+.memory-suggestion-header {
+    font-weight: 600;
+    margin-bottom: .5rem;
+}
+
+.memory-suggestion-body strong {
+    display: block;
+    margin-bottom: .25rem;
+}
+
+.memory-suggestion-body p {
+    margin: 0 0 .75rem;
+    font-size: .85rem;
+    color: var(--muted);
+    word-break: break-word;
+}
+
+.memory-suggestion-actions {
+    display: flex;
+    gap: .5rem;
+}
+
+.memory-suggestion-actions button {
+    cursor: pointer;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: .35rem .8rem;
+    background: transparent;
+    color: var(--text);
+}
+
+.memory-suggestion-actions .ms-save {
+    background: var(--accent-2);
+    border-color: var(--accent-2);
+    color: #fff;
+}
+
+/* 记忆页说明小字 */
+.section-note {
+    margin: .25rem 0 0;
+    font-size: .8rem;
+    color: var(--muted);
+}
+
 /* 骨架屏加载 */
 @keyframes shimmer {
   0% { background-position: -200% 0; }
