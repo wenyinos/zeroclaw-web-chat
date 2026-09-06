@@ -36,9 +36,11 @@ See `.env.example` for all available configuration options.
 - **Stop**: halt the typewriter animation and show the full received content immediately
 - **Image upload**: Send images to PicoClaw for vision recognition (PicoClaw mode only)
 - Markdown rendering (code blocks keep indentation and line breaks, long lines scroll horizontally) with light/dark theme
-- Auto-saved chat records in SQLite database
+- Auto-saved chat records in SQLite database (atomic writes: temp file + rename, so a crash never corrupts the database)
 - **Session management**: create, resume, export as Markdown, delete — separately for direct and group chats
-- Exported records keep only dialogue content, filtering tool/debug details
+- **Export chat records**: download the whole SQLite database (`data/chat.db`) from the settings page
+- Exported records keep only dialogue content, filtering tool/debug output, system placeholder messages and timeout notices; image-only messages are kept as placeholders
+- **Cross-session reply protection**: a reply that lands after you switched direct-chat sessions is saved to the original conversation, never into the current one
 - Responsive chat width and denser typography for better on-screen information density
 - Auto keepalive and reconnect when tab becomes inactive or connection drops
 
@@ -49,23 +51,28 @@ See `.env.example` for all available configuration options.
 - Multiple AI assistants in one chat room
 - 3 default assistants: Claw Agent, Code Bot, Writer
 - **@mention trigger**: Type `@coder` or `@writer` to target specific assistant
-- **All reply mode**: Send without @mention, all assistants reply **one after another** (see note)
+- **All reply mode**: Send without @mention, all assistants reply **simultaneously**
 - **Assistant settings**: Customize name, avatar, system prompt, triggers — each assistant answers in its own persona
+- Pinned memories are injected into group replies as well, consistent with direct chat
 - **Session management**: same as direct chat — create, switch, resume, export, delete
-- Timeout guard: an assistant that stays silent for 90s is marked, then the next one proceeds
+- Timeout guard: an assistant that stays silent for 90s is marked as timed out
 
-> **Why sequential, not simultaneous**: one WebSocket maps to a single agent session on the
-> Gateway. Sending N requests at once yields only one complete reply — the rest return
-> thinking output only, leaving those assistants stuck on "thinking...". So each request now
-> waits for the previous reply to land. The cost is latency growing linearly with the number
-> of assistants (~30s for three).
+> **How concurrent replies work**: each assistant gets its own WebSocket connection with a
+> dedicated Gateway session identifier (`gw_session`), because the Gateway processes requests
+> on the *same* session one-at-a-time (concurrent requests on one session overwrite each
+> other and only one complete reply survives). Distinct sessions run truly in parallel, so
+> three assistants now answer in roughly the time of the slowest one (~10s) instead of the
+> sum (~30s). The identifier also carries a per-device suffix, so multiple devices opening
+> the same group session never overwrite each other or receive each other's replies.
 
 ### SQLite Database Storage
 
 - All messages stored in `data/chat.db` (sql.js / WASM)
 - Separate tables for private chat, group chat, settings, memories, documents
 - Auto-initialization on first run, automatic column migration on upgrade — no manual steps
-- Every write rewrites the whole database file, so binary content (images, stickers) lives on the filesystem instead
+- Every write rewrites the whole database file (binary content such as images and stickers lives on the filesystem instead)
+- Writes are atomic: the file is written to a temp file first, then renamed over `chat.db`, so a crash mid-write can never corrupt the database
+- Deleting a session removes all its messages in a single SQL statement
 
 > **Upgrade note**: this version adds a `session_id` column to `group_messages`. It is detected
 > and applied via `ALTER TABLE` on startup, and existing group messages are moved into a
@@ -86,6 +93,8 @@ Set `MEMORY_ENABLED=true` to show this tab — it is off by default.
 
 - **Upload Markdown**: import `.md` files as memories; filename becomes the title, body becomes the content
 - **Only pinned memories are sent**: just the 📌 pinned ones ride along with your message, keeping context cost under control
+- Injected into **both direct and group chat**; each memory carries its last-updated date so the model can judge freshness, and the total injection is capped at 4000 characters (overflow is truncated)
+- **Auto-extraction**: after a direct-chat reply lands, the Gateway is asked once (on a throwaway connection) whether the conversation contained durable personal facts; candidates appear in a confirmation card — nothing is saved unless you click "Save & pin" (throttled to once per minute, silent on failure)
 - The UI always shows exactly what you typed — memories are only appended to the payload sent to the Gateway
 - Also supports hand-written memories, keyword search, and a 100KB per-entry limit
 
@@ -95,6 +104,10 @@ Memory list
 ⭐ project-background.md   ← sent with the conversation
 ☆  meeting-notes.md       ← not sent
 ```
+
+> Note: the Gateway (PicoClaw) also keeps its own channel-wide memory that cannot be managed
+> from this UI; the injection prompt therefore states that pinned memories are the user's
+> confirmed latest information and take precedence.
 
 ### Sticker Panel
 
@@ -107,12 +120,14 @@ Memory list
 - Username and assistant name customization
 - Theme selection (light/dark)
 - Browser notification toggle
+- **Data management**: export the chat record database as a SQLite file (`chat-records-<date>.db`)
 - Settings changes are pushed over SSE to other open tabs
 
 ### Real-time Updates (SSE)
 
 - `GET /api/stream` opens the connection, sends a snapshot first, then a heartbeat every 25s
-- Currently only **settings changes** are broadcast; the message and console-event broadcasts are wired on the client but not yet emitted by the server
+- Currently only **settings and sticker changes** are broadcast; the message and console-event broadcasts are wired on the client but not yet emitted by the server
+- The snapshot also triggers a re-fetch of direct-chat history, so messages sent by other clients while the connection was down are picked up on reconnect
 - Auto-reconnect on connection drop
 
 ### PWA Support
@@ -187,13 +202,14 @@ public/
 
 ### Memories and Documents
 - `GET /api/memories` - List memories
-- `POST /api/memories` - Create memory (Markdown upload reuses this endpoint)
+- `POST /api/memories` - Create memory (`pinned` optional; Markdown upload reuses this endpoint)
 - `PUT /api/memories/:id` - Update memory
 - `POST /api/memories/:id/pin` - Toggle pin (controls whether it is sent with the conversation)
 - `DELETE /api/memories/:id` - Delete memory
 - `GET /api/documents` - List documents
 
 ### Other
+- `GET /api/export/database` - Download the chat record database (SQLite file)
 - `GET /api/stickers` - List stickers
 - `POST /api/stickers` - Upload sticker (data URL, written to `data/stickers/`)
 - `DELETE /api/stickers/:id` - Delete sticker
