@@ -1,0 +1,43 @@
+name: Release
+
+# 推送 v* 标签时触发：打包源码并发布 GitHub Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Package source (zip)
+        run: |
+          git archive --format=zip \
+            --prefix="zeroclaw-web-chat-${{ github.ref_name }}/" \
+            -o "zeroclaw-web-chat-${{ github.ref_name }}.zip" HEAD
+
+      - name: Package source (tar.gz)
+        run: |
+          git archive --format=tar.gz \
+            --prefix="zeroclaw-web-chat-${{ github.ref_name }}/" \
+            -o "zeroclaw-web-chat-${{ github.ref_name }}.tar.gz" HEAD
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          body: |
+            ZeroClaw Web Chat ${{ github.ref_name }} 源码包。
+
+            部署步骤见 README（`npm install && npm start`，配置 `.env` 后访问 `http://localhost:3332`）。
+          files: |
+            zeroclaw-web-chat-${{ github.ref_name }}.zip
+            zeroclaw-web-chat-${{ github.ref_name }}.tar.gz
+          generate_release_notes: true
