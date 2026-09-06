@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { log, LOG_FILE } from './lib/logger.js';
-import { router as apiRouter, validateAccessKey } from './routes/api.js';
+import { router as apiRouter, validateAccessKey, initConsoleEvents } from './routes/api.js';
 import { setupWsProxy } from './lib/ws-proxy.js';
 import { startSessionCleanup } from './lib/sessions.js';
 import { startRateLimiterCleanup } from './lib/rateLimiter.js';
@@ -22,9 +22,15 @@ dotenv.config({ path: path.join(__dirname, '.env'), override: true });
 // 验证 ACCESS_KEY
 validateAccessKey();
 
+// 控制台事件中读取 .env 的部分须在 dotenv 加载后初始化
+initConsoleEvents();
+
 // 配置
 const PORT = process.env.PORT || 3332;
-const GATEWAY_URL = process.env.ZEROCLOW_GATEWAY_URL || 'http://localhost:8190';
+const AI_BACKEND = (process.env.AI_BACKEND || 'zeroclaw').toLowerCase();
+const GATEWAY_URL = AI_BACKEND === 'picoclaw'
+  ? (process.env.PICOCLAW_GATEWAY_URL || 'http://localhost:18790')
+  : (process.env.ZEROCLOW_GATEWAY_URL || 'http://localhost:8190');
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(origin => origin.trim())
@@ -86,7 +92,7 @@ startRateLimiterCleanup();
 server.listen(PORT, '0.0.0.0', () => {
   log('info', '🚀 ZeroClaw Web Chat 已启动');
   log('info', `📍 访问地址: http://localhost:${PORT}`);
-  log('info', `🔗 Gateway: ${GATEWAY_URL}`);
+  log('info', `🔗 Gateway: ${GATEWAY_URL} (后端: ${AI_BACKEND})`);
   log('info', `🔑 访问密钥: 已启用 (环境变量 ACCESS_KEY)`);
   log('info', `📝 日志文件: ${LOG_FILE}`);
   log('info', '© ZeroClaw - AI Assistant Web Interface');

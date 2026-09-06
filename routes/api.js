@@ -25,6 +25,7 @@ import {
   addChatMessage,
   getChatMessages,
   deleteChatMessage,
+  deleteChatSession,
   toggleChatMessageFavorite,
   getChatSessions,
   addGroupMessage,
@@ -32,7 +33,6 @@ import {
   deleteGroupMessage,
   updateGroupMessageContent,
   toggleGroupMessageFavorite,
-  clearGroupMessages,
   getGroupSessions,
   deleteGroupSession,
   getAssistants,
@@ -44,6 +44,7 @@ import {
   getSetting,
   setSetting,
   getAllSettings,
+  getDatabasePath,
   getMemories,
   addMemory,
   updateMemory,
@@ -332,7 +333,9 @@ router.delete('/api/chat/messages/:id', requireVerifiedSession, (req, res) => {
 // API 路由 - 私聊消息收藏
 router.post('/api/chat/messages/:id/favorite', requireVerifiedSession, (req, res) => {
   const { id } = req.params;
-  toggleChatMessageFavorite(id);
+  if (!toggleChatMessageFavorite(id)) {
+    return res.status(404).json({ success: false, error: '消息不存在' });
+  }
   log('info', `私聊消息收藏状态已切换: ${id}`);
   return res.json({ success: true, id });
 });
@@ -418,7 +421,9 @@ router.delete('/api/group/messages/:id', requireVerifiedSession, (req, res) => {
 // API 路由 - 群聊消息收藏
 router.post('/api/group/messages/:id/favorite', requireVerifiedSession, (req, res) => {
   const { id } = req.params;
-  toggleGroupMessageFavorite(id);
+  if (!toggleGroupMessageFavorite(id)) {
+    return res.status(404).json({ success: false, error: '消息不存在' });
+  }
   log('info', `群聊消息收藏状态已切换: ${id}`);
   return res.json({ success: true, id });
 });
@@ -436,14 +441,6 @@ router.put('/api/group/messages/:id', requireVerifiedSession, (req, res) => {
 
   log('info', `群聊消息已更新: ${id}`);
   return res.json({ success: true, id });
-});
-
-// API 路由 - 清空群聊消息
-router.delete('/api/group/messages', requireVerifiedSession, (req, res) => {
-  const { assistant_id } = req.query;
-  clearGroupMessages(assistant_id || null);
-  log('info', `群聊消息已清空: ${assistant_id || 'all'}`);
-  return res.json({ success: true });
 });
 
 // API 路由 - 群聊会话列表
@@ -738,14 +735,14 @@ router.get('/api/sessions/:sessionId', requireVerifiedSession, (req, res) => {
 router.delete('/api/sessions/:sessionId', requireVerifiedSession, (req, res) => {
   const { sessionId } = req.params;
 
-  // 删除该会话的所有消息
-  const messages = getChatMessages(sessionId, 10000);
-  for (const msg of messages) {
-    deleteChatMessage(msg.id);
+  // 整会话一条 SQL 删除，避免逐条删触发多次全库重写
+  const removed = deleteChatSession(sessionId);
+  if (removed === 0) {
+    return res.status(404).json({ success: false, error: '会话不存在' });
   }
 
-  log('info', `会话已删除: ${sessionId}, 消息数: ${messages.length}`);
-  return res.json({ success: true, sessionId });
+  log('info', `会话已删除: ${sessionId}, 消息数: ${removed}`);
+  return res.json({ success: true, sessionId, removed });
 });
 
 // API 路由 - 会话清理 (forge)
@@ -799,8 +796,20 @@ router.post('/api/sessions/forge', requireVerifiedSession, (req, res) => {
 
 // 初始化控制台事件
 addConsoleEvent('system', '系统启动', '服务器已启动');
-const initConfig = getConfig();
-addConsoleEvent('system', '后端配置', `当前后端: ${initConfig.USE_PICOCLAW ? 'PicoClaw' : 'ZeroClaw'}`);
+// 后端配置依赖 .env，本模块被 import 时 dotenv 尚未加载，须由 server.js 在 dotenv 之后调用
+export function initConsoleEvents() {
+  const initConfig = getConfig();
+  addConsoleEvent('system', '后端配置', `当前后端: ${initConfig.USE_PICOCLAW ? 'PicoClaw' : 'ZeroClaw'}`);
+}
+
+// API 路由 - 导出聊天记录（SQLite 整库文件）
+router.get('/api/export/database', requireVerifiedSession, (req, res) => {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  log('info', '导出聊天记录数据库');
+  res.download(getDatabasePath(), `chat-records-${stamp}.db`, (err) => {
+    if (err) log('error', `导出聊天记录数据库失败: ${err.message}`);
+  });
+});
 
 // API 路由 - 获取记忆列表
 router.get('/api/memories', requireVerifiedSession, (req, res) => {
@@ -810,7 +819,7 @@ router.get('/api/memories', requireVerifiedSession, (req, res) => {
 
 // API 路由 - 创建记忆
 router.post('/api/memories', requireVerifiedSession, (req, res) => {
-  const { title, content, tags, mood } = req.body;
+  const { title, content, tags, mood, pinned } = req.body;
   if (!title || !content) {
     return res.status(400).json({ success: false, error: '标题和内容不能为空' });
   }
@@ -826,7 +835,7 @@ router.post('/api/memories', requireVerifiedSession, (req, res) => {
     content,
     tags: Array.isArray(tags) ? tags : [],
     mood: mood || 'neutral',
-    pinned: false
+    pinned: pinned === true
   };
 
   addMemory(memory);
