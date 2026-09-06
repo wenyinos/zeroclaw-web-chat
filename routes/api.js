@@ -869,7 +869,9 @@ router.delete('/api/memories/:id', requireVerifiedSession, (req, res) => {
 router.post('/api/memories/:id/pin', requireVerifiedSession, (req, res) => {
   const { id } = req.params;
 
-  toggleMemoryPin(id);
+  if (!toggleMemoryPin(id)) {
+    return res.status(404).json({ success: false, error: '记忆不存在' });
+  }
 
   log('info', `记忆置顶状态已切换: ${id}`);
   return res.json({ success: true, id });
