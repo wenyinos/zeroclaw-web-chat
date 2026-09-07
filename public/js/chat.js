@@ -3825,8 +3825,13 @@ class ClawAgent {
     // 自动调整输入框高度 + 命令补全触发
     elements.messageInput.addEventListener('input', () => {
       elements.messageInput.style.height = 'auto';
+      let value = elements.messageInput.value;
+      // 中文输入法下 / 键常输出全角「／」，归一化为半角保证命令面板可用
+      if (value.startsWith('／')) {
+        value = '/' + value.slice(1);
+        elements.messageInput.value = value;
+      }
       elements.messageInput.style.height = Math.min(elements.messageInput.scrollHeight, 200) + 'px';
-      const value = elements.messageInput.value;
       if (value.startsWith('/') && !value.includes('\n')) {
         this.showCommandMenu(value);
       } else {
