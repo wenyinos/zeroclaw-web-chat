@@ -33,8 +33,12 @@ See `.env.example` for all available configuration options.
 - WebSocket chat (`/ws/chat` proxied to Gateway)
 - **Wait feedback and typewriter rendering**: typing indicator appears on send, reply is revealed progressively
 - **Message actions**: copy, reply, favorite, delete, regenerate
-- **Stop**: halt the typewriter animation and show the full received content immediately
+- **Stop**: halt the typewriter animation, show the full received content immediately, and abort the server-side generation via the gateway `/stop` command
 - **Image upload**: Send images to PicoClaw for vision recognition (PicoClaw mode only)
+- **Slash commands**: type `/` in the direct-chat input for a command palette (13 gateway commands with filtering and keyboard navigation); `/context` renders a token-usage progress bar
+- **Duplicate-reply dedup**: gateway retries and cross-connection broadcasts of the same generation are rendered once only; gateway error texts (e.g. empty responses) become fixed placeholders
+- **Per-tab isolation**: each browser tab/device gets its own gateway session, so opening the same conversation twice no longer doubles replies
+- **Proactive messages**: gateway-initiated pushes (heartbeat tasks, cron jobs, spawned sub-agents) arrive as notifications and are persisted
 - Markdown rendering (code blocks keep indentation and line breaks, long lines scroll horizontally) with light/dark theme
 - Auto-saved chat records in SQLite database (atomic writes: temp file + rename, so a crash never corrupts the database)
 - **Session management**: create, resume, export as Markdown, delete — separately for direct and group chats
@@ -109,6 +113,25 @@ Memory list
 > from this UI; the injection prompt therefore states that pinned memories are the user's
 > confirmed latest information and take precedence.
 
+### Slash Commands
+
+Typing `/` in the direct-chat input opens a command palette; commands are parsed by the
+Gateway itself (no LLM cost) and both the command and its result persist in the conversation.
+
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/context` | Token usage of the current gateway session (rendered as a progress bar) |
+| `/stop` | Abort the current server-side generation |
+| `/show model` / `/show agents` | Show current model / agent runtime status |
+| `/list models` / `/list skills` / `/list mcp` / `/list agents` / `/list channels` | List configured resources |
+| `/switch model to <name>` | Switch the model (requires multiple entries in `model_list`) |
+| `/use <skill> [message]` | Force a skill for the next request |
+| `/btw <question>` | Side question that does not change session history |
+
+> The command set follows the installed PicoClaw version (verified on 0.3.1). Commands with
+> arguments are inserted into the input box for completion; argument-less ones execute directly.
+
 ### Sticker Panel
 
 - 20 built-in emoji, click to insert into the input box
@@ -128,6 +151,7 @@ Memory list
 - `GET /api/stream` opens the connection, sends a snapshot first, then a heartbeat every 25s
 - Currently only **settings and sticker changes** are broadcast; the message and console-event broadcasts are wired on the client but not yet emitted by the server
 - The snapshot also triggers a re-fetch of direct-chat history, so messages sent by other clients while the connection was down are picked up on reconnect
+- Messages that arrive while no request is in flight (heartbeat tasks, cron jobs, spawned sub-agents — see the PicoClaw heartbeat feature) are shown as proactive notifications and persisted
 - Auto-reconnect on connection drop
 
 ### PWA Support
