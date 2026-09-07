@@ -1,6 +1,6 @@
 {
   "name": "zeroclaw-web-chat",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "ZeroClaw Web Chat - Bootstrap + Node.js",
   "main": "server.js",
   "type": "module",
