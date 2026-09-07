@@ -36,6 +36,10 @@ class ClawAgent {
     this.directReplySessionId = null;
     // 自动记忆提取的节流时间戳
     this.lastMemoryExtractAt = 0;
+    // 聊天命令：在途命令响应的回调（命令经网关解析，不走 LLM 对话流）
+    this.pendingCommand = null;
+    // 是否有在途的普通提问（用于识别网关主动推送的消息，如心跳/定时任务结果）
+    this.awaitingReply = false;
     // 本设备标识：群聊 gw_session 携带，多端开同一群聊会话时各自独立网关会话，
     // 避免网关把一条回复广播串进另一端的占位（picoclaw 记忆本为渠道级全局共享，无隔离损失）
     this.clientId = Math.random().toString(36).slice(2, 6);
@@ -852,6 +856,16 @@ class ClawAgent {
       case 'message':
         // 空内容帧（网关渠道广播的流式首帧等）不入库不渲染
         if (!data.content || !data.content.trim()) break;
+        // 聊天命令的响应（/help 等）：交给发起方处理，不进入对话流
+        if (this.pendingCommand) {
+          const resolveCommand = this.pendingCommand.resolve;
+          this.pendingCommand = null;
+          resolveCommand(data.content);
+          break;
+        }
+        // 是否有在途提问：有则为本轮回复，无则为网关主动推送（心跳/定时任务/子代理结果）
+        const wasAwaiting = this.awaitingReply || !!this.directReplySessionId;
+        this.awaitingReply = false;
         // 完整回复（代理层已缓冲，无需打字机）
         this.hideTyping();
         this.setBusy(false);
@@ -874,6 +888,10 @@ class ClawAgent {
         data.content = this.replaceGatewayError(data.content);
         // 同一轮回复被网关重试/广播多次生成时，只保留第一条
         if (this.isDuplicateAssistantReply(data.content)) break;
+        if (!wasAwaiting) {
+          this.showProactiveMessage(data.content);
+          break;
+        }
         const message = this.addMessage('assistant', data.content);
         this.sendNotification('新消息', data.content.substring(0, 100));
         // 保存到后端
@@ -922,6 +940,143 @@ class ClawAgent {
       if (prev.length >= 40 && normalized.startsWith(prev.slice(0, 40))) return true;
     }
     return false;
+  }
+
+  // ===== 聊天命令（网关侧解析，不进 LLM 对话流） =====
+  // 0.3.1 实测可用命令；/context 未列入 /help 但实测可用
+  CHAT_COMMANDS = [
+    { cmd: '/help', desc: '显示可用命令' },
+    { cmd: '/context', desc: '查看上下文 token 用量' },
+    { cmd: '/stop', desc: '停止当前生成任务' },
+    { cmd: '/show model', desc: '查看当前模型与提供商' },
+    { cmd: '/show agents', desc: '查看 Agent 运行状态' },
+    { cmd: '/list models', desc: '查看已配置模型' },
+    { cmd: '/list skills', desc: '查看已安装技能' },
+    { cmd: '/list mcp', desc: '查看 MCP 工具服务器' },
+    { cmd: '/list agents', desc: '查看已注册 Agent' },
+    { cmd: '/list channels', desc: '查看已启用通道' },
+    { cmd: '/switch model to ', desc: '切换模型（补全后输入模型名）' },
+    { cmd: '/use ', desc: '调用技能（补全后输入技能名与消息）' },
+    { cmd: '/btw ', desc: '旁路提问（不改变会话历史）' }
+  ];
+
+  // 通过主连接发送网关命令并等待其直接响应
+  sendCommand(cmd) {
+    if (!this.isConnected) return Promise.reject(new Error('未连接到服务器'));
+    if (this.pendingCommand) return Promise.reject(new Error('有命令正在执行，请稍候'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingCommand && this.pendingCommand.resolve === wrapped) {
+          this.pendingCommand = null;
+          reject(new Error('命令响应超时'));
+        }
+      }, 20000);
+      const wrapped = (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      this.pendingCommand = { resolve: wrapped };
+      this.ws.send(JSON.stringify({
+        type: 'message',
+        content: cmd,
+        context: this.getContextMessages(20)
+      }));
+    });
+  }
+
+  // 执行命令：命令与结果都进入对话流并落库，保持会话记录完整
+  async runCommand(cmd) {
+    try {
+      const userMsg = this.addMessage('user', cmd);
+      await this.saveChatMessage(userMsg);
+      const result = await this.sendCommand(cmd);
+      const aiMsg = this.addMessage('assistant', this.formatCommandResult(cmd, result));
+      await this.saveChatMessage(aiMsg);
+    } catch (error) {
+      console.error('命令执行失败:', error);
+      this.showToast('error', '命令执行失败', error.message);
+    }
+  }
+
+  // 命令结果美化：/context 转 token 进度条，其余按 Markdown 渲染
+  formatCommandResult(cmd, result) {
+    if (cmd.startsWith('/context')) {
+      const m = result.match(/Used:\s*~?(\d+)\s*\/\s*(\d+)\s*tokens?\s*\((\d+)%\)/);
+      if (m) {
+        const pct = Math.min(100, Number(m[3]));
+        const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5));
+        return `**上下文用量** ${m[1]} / ${m[2]} tokens（${pct}%）\n\n${bar} ${pct}%`;
+      }
+    }
+    return result;
+  }
+
+  // 命令补全面板：输入以 / 开头时展示，支持过滤与键盘导航
+  showCommandMenu(keyword) {
+    const input = this.elements.messageInput;
+    let menu = document.getElementById('commandMenu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'commandMenu';
+      menu.className = 'mention-menu';
+      input.parentNode.appendChild(menu);
+    }
+    const kw = (keyword || '').toLowerCase();
+    const matched = this.CHAT_COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(kw));
+    if (matched.length === 0) {
+      this.hideCommandMenu();
+      return;
+    }
+    this.commandMenuState = { items: matched, index: 0 };
+    menu.innerHTML = matched.map((c, i) => `
+      <div class="mention-item ${i === 0 ? 'active' : ''}" data-cmd="${this.escapeHtml(c.cmd)}">
+        <span class="mention-name">${this.escapeHtml(c.cmd)}</span>
+        <span class="mention-desc">${this.escapeHtml(c.desc)}</span>
+      </div>
+    `).join('');
+    menu.querySelectorAll('.mention-item').forEach((el, i) => {
+      el.addEventListener('click', () => this.pickCommand(matched[i].cmd));
+    });
+    menu.style.display = 'block';
+  }
+
+  hideCommandMenu() {
+    const menu = document.getElementById('commandMenu');
+    if (menu) menu.style.display = 'none';
+    this.commandMenuState = null;
+  }
+
+  // 面板内 ↑↓ 移动高亮
+  moveCommandMenuSelection(delta) {
+    const state = this.commandMenuState;
+    if (!state) return;
+    state.index = (state.index + delta + state.items.length) % state.items.length;
+    const menu = document.getElementById('commandMenu');
+    menu.querySelectorAll('.mention-item').forEach((el, i) => {
+      el.classList.toggle('active', i === state.index);
+    });
+  }
+
+  // 选中命令：带参数的命令补全后留待用户补充，无参数的直接执行
+  pickCommand(cmd) {
+    const input = this.elements.messageInput;
+    this.hideCommandMenu();
+    if (cmd.endsWith(' ')) {
+      input.value = cmd;
+      input.focus();
+    } else {
+      input.value = '';
+      input.style.height = 'auto';
+      this.runCommand(cmd);
+    }
+  }
+
+  // 网关主动推送（心跳任务、定时任务、子代理结果等）：无在途提问时到达的消息
+  showProactiveMessage(content) {
+    const message = this.addMessage('assistant', content);
+    this.saveChatMessage(message);
+    this.sendNotification('收到主动消息', content.substring(0, 100));
+    this.showToast('info', '收到主动消息', content.substring(0, 60));
   }
 
   // 群聊回复落地：按占位消息 id 精确匹配（并发下各回复来自各自连接）
@@ -1231,9 +1386,15 @@ class ClawAgent {
   }
 
   // 停止逐字动画并立即显示已收到的完整内容。
-  // 注意：不会中断 Gateway 端已经开始的生成——picoclaw 未公开取消协议。
+  // 同时通知 Gateway 中止生成（/stop 为网关侧命令），避免服务端继续消耗 token。
   stopGenerating() {
     this.stopTypewriter();
+
+    // 服务端中止：网关解析 /stop 后停止当前任务，响应静默丢弃
+    if (this.isConnected && !this.pendingCommand) {
+      this.sendCommand('/stop').catch(() => { /* 停止失败不影响本地收尾 */ });
+    }
+    this.awaitingReply = false;
 
     const last = this.messages[this.messages.length - 1];
     if (last && last.role === 'assistant') {
@@ -1340,6 +1501,7 @@ class ClawAgent {
     // 避免旧会话的回答渲染/落库到新会话（主连接协议无法逐请求关联回复，
     // 且网关对同连接并发请求是覆盖式处理，单值绑定已覆盖实际场景）
     this.directReplySessionId = this.sessionId;
+    this.awaitingReply = true;
 
     // 置顶记忆作为长期记忆，随本次发送一并带上
     const memoryPrompt = this.buildMemoryPrompt();
@@ -3638,6 +3800,18 @@ class ClawAgent {
 
     // 消息输入
     elements.messageInput.addEventListener('keydown', (e) => {
+      // 命令补全面板打开时优先处理导航键
+      if (this.commandMenuState) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.moveCommandMenuSelection(1); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); this.moveCommandMenuSelection(-1); return; }
+        if (e.key === 'Escape') { e.preventDefault(); this.hideCommandMenu(); return; }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          const item = this.commandMenuState.items[this.commandMenuState.index];
+          if (item) this.pickCommand(item.cmd);
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (e.ctrlKey || e.metaKey) {
@@ -3648,10 +3822,16 @@ class ClawAgent {
       }
     });
 
-    // 自动调整输入框高度
+    // 自动调整输入框高度 + 命令补全触发
     elements.messageInput.addEventListener('input', () => {
       elements.messageInput.style.height = 'auto';
       elements.messageInput.style.height = Math.min(elements.messageInput.scrollHeight, 200) + 'px';
+      const value = elements.messageInput.value;
+      if (value.startsWith('/') && !value.includes('\n')) {
+        this.showCommandMenu(value);
+      } else {
+        this.hideCommandMenu();
+      }
     });
 
     // 发送按钮

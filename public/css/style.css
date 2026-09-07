@@ -2008,6 +2008,18 @@ button:active:not(:disabled) {
   background: var(--panel-soft);
 }
 
+/* 命令补全面板（复用 mention-menu 结构） */
+.mention-item.active {
+  background: var(--panel-soft);
+}
+
+.mention-desc {
+  margin-left: auto;
+  font-size: .78rem;
+  color: var(--muted);
+  text-align: right;
+}
+
 .mention-avatar {
   font-size: 1.2rem;
 }
