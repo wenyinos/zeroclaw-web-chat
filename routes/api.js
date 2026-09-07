@@ -27,6 +27,7 @@ import {
   deleteChatMessage,
   deleteChatSession,
   toggleChatMessageFavorite,
+  updateChatMessageContent,
   getChatSessions,
   addGroupMessage,
   getGroupMessages,
@@ -337,6 +338,20 @@ router.post('/api/chat/messages/:id/favorite', requireVerifiedSession, (req, res
     return res.status(404).json({ success: false, error: '消息不存在' });
   }
   log('info', `私聊消息收藏状态已切换: ${id}`);
+  return res.json({ success: true, id });
+});
+
+// API 路由 - 更新私聊消息内容（流式分段后以完整版本原地替换）
+router.put('/api/chat/messages/:id', requireVerifiedSession, (req, res) => {
+  const { id } = req.params;
+  const { content, thinking } = req.body;
+
+  if (!updateChatMessageContent(id, content, thinking)) {
+    log('warn', `待更新的私聊消息不存在: ${id}`);
+    return res.status(404).json({ success: false, error: '消息不存在' });
+  }
+
+  log('info', `私聊消息已更新: ${id}`);
   return res.json({ success: true, id });
 });
 

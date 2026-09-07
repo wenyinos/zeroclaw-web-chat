@@ -885,8 +885,15 @@ class ClawAgent {
         this.directReplySessionId = null;
         // 网关错误响应（空响应等）用固定占位文字替代，历史里不留裸错误串
         data.content = this.replaceGatewayError(data.content);
-        // 同一轮回复被网关重试/广播多次生成时，只保留第一条
-        if (this.isDuplicateAssistantReply(data.content)) break;
+        // 同源回复（分段 flush / 重试 / 广播多次送达）：更长的是更完整的版本，
+        // 原地替换已显示的截断版；等长或更短视为纯副本丢弃
+        const dup = this.findDuplicateAssistantReply(data.content);
+        if (dup) {
+          if (data.content.length > (dup.content || '').length) {
+            this.updateDuplicateReply(dup, data.content);
+          }
+          break;
+        }
         if (!wasAwaiting) {
           this.showProactiveMessage(data.content);
           break;
@@ -924,21 +931,46 @@ class ClawAgent {
     return content;
   }
 
-  // 重复回复去重：同一轮回复被网关重试/广播多次送达时，仅保留第一条。
-  // 对比最近 60 秒内连续助手回复的前 40 字符（去空白），一致即视为副本；
-  // 40 字符阈值保证正常连续提问（回复开头相近）不会被误杀。
-  isDuplicateAssistantReply(content) {
+  // 同源回复识别：同一轮回复被分段 flush / 重试 / 广播多次送达时，
+  // 新版本以旧版本开头（去空白前 40 字符）出现。返回匹配的上一条消息，
+  // 供调用方原地替换；无匹配返回 null。
+  findDuplicateAssistantReply(content) {
     const normalized = content.replace(/\s+/g, '');
-    if (normalized.length < 40) return false;
+    if (normalized.length < 40) return null;
     const now = Date.now();
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const m = this.messages[i];
       if (m.role !== 'assistant') break;
       if (now - new Date(m.timestamp).getTime() > 60000) break;
       const prev = (m.content || '').replace(/\s+/g, '');
-      if (prev.length >= 40 && normalized.startsWith(prev.slice(0, 40))) return true;
+      if (prev.length >= 40 && normalized.startsWith(prev.slice(0, 40))) return m;
     }
-    return false;
+    return null;
+  }
+
+  // 用更完整的同源版本原地替换已显示/已落库的截断回复
+  updateDuplicateReply(message, content) {
+    message.content = content;
+    const el = document.querySelector(`[data-message-id="${message.id}"] .bubble-text`)
+      || document.querySelector(`[data-message-id="${message.id}"] .bubble`);
+    if (el) el.innerHTML = this.renderContent(content);
+    this.updateChatMessageInDb(message.id, content, message.thinking || '');
+  }
+
+  updateChatMessageInDb(messageId, content, thinking) {
+    fetch(`/api/chat/messages/${messageId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': this.verifiedSessionId
+      },
+      body: JSON.stringify({ content, thinking })
+    }).then(response => {
+      // 404 = 消息已被用户删除，属正常；其余失败要留痕
+      if (!response.ok && response.status !== 404) {
+        console.error('更新私聊消息失败:', response.status);
+      }
+    }).catch(error => console.error('更新私聊消息失败:', error));
   }
 
   // ===== 聊天命令（网关侧解析，不进 LLM 对话流） =====
