@@ -1914,6 +1914,7 @@ class ClawAgent {
   }
 
   async loadStickers() {
+    if (!this.verifiedSessionId) return; // 未登录时不请求，避免必然的 401
     try {
       const response = await fetch('/api/stickers', {
         headers: { 'X-Session-Id': this.verifiedSessionId }
@@ -4004,9 +4005,6 @@ class ClawAgent {
     elements.stickerUploadInput.addEventListener('change', (e) => {
       this.handleStickerUpload(e.target.files);
     });
-
-    // 加载贴纸列表
-    this.loadStickers();
 
     // 控制台
     elements.consoleSendBtn.addEventListener('click', () => {
