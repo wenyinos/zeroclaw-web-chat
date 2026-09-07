@@ -840,7 +840,6 @@ class ClawAgent {
   enableInput() {
     this.elements.messageInput.disabled = false;
     this.elements.sendBtn.disabled = false;
-    this.elements.messageInput.placeholder = '输入消息...';
 
     // 启用群聊输入
     if (this.elements.groupMessageInput) {
