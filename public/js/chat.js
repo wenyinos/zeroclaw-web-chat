@@ -540,7 +540,10 @@ class ClawAgent {
     this.updateConnectionStatus('connecting');
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/chat?auth_session=${this.verifiedSessionId}`;
+    // gw_session 带设备标识：同一登录会话的多标签页/多端各自独立网关会话，
+    // 避免 picoclaw 把一端的回复广播成所有端的"新消息"（本地鉴权仍走 auth_session）
+    const wsUrl = `${protocol}//${window.location.host}/ws/chat` +
+      `?auth_session=${this.verifiedSessionId}&gw_session=chat-${encodeURIComponent(this.sessionId)}-u${this.clientId}`;
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -867,6 +870,10 @@ class ClawAgent {
           break;
         }
         this.directReplySessionId = null;
+        // 网关错误响应（空响应等）用固定占位文字替代，历史里不留裸错误串
+        data.content = this.replaceGatewayError(data.content);
+        // 同一轮回复被网关重试/广播多次生成时，只保留第一条
+        if (this.isDuplicateAssistantReply(data.content)) break;
         const message = this.addMessage('assistant', data.content);
         this.sendNotification('新消息', data.content.substring(0, 100));
         // 保存到后端
@@ -890,6 +897,31 @@ class ClawAgent {
         this.addSystemMessage(data.message || '发生错误', 'error');
         break;
     }
+  }
+
+  // 网关空响应/错误文本 → 固定占位文字（渲染与落库均用占位）
+  replaceGatewayError(content) {
+    const text = (content || '').trim();
+    if (/^The model returned an empty response/i.test(text)) return '（模型未返回有效内容，请重试）';
+    if (/^The model returned an error/i.test(text)) return '（模型返回错误，请重试）';
+    return content;
+  }
+
+  // 重复回复去重：同一轮回复被网关重试/广播多次送达时，仅保留第一条。
+  // 对比最近 60 秒内连续助手回复的前 40 字符（去空白），一致即视为副本；
+  // 40 字符阈值保证正常连续提问（回复开头相近）不会被误杀。
+  isDuplicateAssistantReply(content) {
+    const normalized = content.replace(/\s+/g, '');
+    if (normalized.length < 40) return false;
+    const now = Date.now();
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role !== 'assistant') break;
+      if (now - new Date(m.timestamp).getTime() > 60000) break;
+      const prev = (m.content || '').replace(/\s+/g, '');
+      if (prev.length >= 40 && normalized.startsWith(prev.slice(0, 40))) return true;
+    }
+    return false;
   }
 
   // 群聊回复落地：按占位消息 id 精确匹配（并发下各回复来自各自连接）
