@@ -34,7 +34,7 @@ See `.env.example` for all available configuration options.
 - **Wait feedback and typewriter rendering**: typing indicator appears on send, reply is revealed progressively
 - **Message actions**: copy, reply, favorite, delete, regenerate
 - **Stop**: halt the typewriter animation, show the full received content immediately, and abort the server-side generation via the gateway `/stop` command
-- **Image upload**: Send images to PicoClaw for vision recognition (PicoClaw mode only)
+- **Image upload**: Send images to PicoClaw for vision recognition (PicoClaw mode only). Images reach the model but are **never written to the database** — reloaded history shows an “Image not saved” placeholder, which keeps the database from ballooning
 - **Slash commands**: type `/` in the direct-chat input for a command palette (13 gateway commands with filtering and keyboard navigation); `/context` renders a token-usage progress bar
 - **Duplicate-reply dedup**: gateway retries and cross-connection broadcasts of the same generation are rendered once only; gateway error texts (e.g. empty responses) become fixed placeholders
 - **Per-tab isolation**: each browser tab/device gets its own gateway session, so opening the same conversation twice no longer doubles replies
@@ -77,11 +77,19 @@ See `.env.example` for all available configuration options.
 - Every write rewrites the whole database file (binary content such as images and stickers lives on the filesystem instead)
 - Writes are atomic: the file is written to a temp file first, then renamed over `chat.db`, so a crash mid-write can never corrupt the database
 - Deleting a session removes all its messages in a single SQL statement
+- **Chat images are never persisted**: the `images` column keeps only a placeholder (`__image_omitted__`) in place of inline base64 data. Short static references such as sticker URLs are kept as they are, and the image count per message is preserved
+- Legacy image data already in the database is converted to placeholders **automatically on startup**, and the freed space is reclaimed — the log prints `库体积 X → Y` so you can confirm it worked
 
-> **Upgrade note**: this version adds a `session_id` column to `group_messages`. It is detected
+> **Upgrade note (v2.1.0)**: adds a `session_id` column to `group_messages`. It is detected
 > and applied via `ALTER TABLE` on startup, and existing group messages are moved into a
-> history session named `group-legacy` — nothing is lost. The migration rewrites in place with
-> no rollback, so back up `data/chat.db` before upgrading.
+> history session named `group-legacy` — nothing is lost.
+
+> **Upgrade note (v2.1.3)**: chat images stop being stored. The first startup after upgrading
+> replaces every legacy image blob with a placeholder and compacts the file. The cleanup is
+> idempotent, runs on every start, and never blocks startup: if compaction cannot run (for
+> example, not enough free disk for the temporary copy) it logs a warning and retries on a
+> later start. Both migration and compaction rewrite `chat.db` in place with no rollback, so
+> **back up `data/chat.db` before upgrading**.
 
 ### URL-based Session
 
@@ -321,6 +329,9 @@ server {
 Backup the `data/` directory to preserve:
 - `chat.db` - All messages and settings
 - `stickers/` - Custom stickers
+
+Upgrading to v2.1.3 shrinks `chat.db` on first start, as legacy image data is purged. Take the
+backup **before** restarting: the purge rewrites the database in place.
 
 ## Troubleshooting (WebSocket Handshake 401)
 

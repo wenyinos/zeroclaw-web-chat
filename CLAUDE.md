@@ -80,6 +80,10 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 `express.json` 的上限是 **5MB** 而非默认 100KB，贴纸/图片消息/文档都靠它；调小会让这些功能在到达业务校验前就以 500 失败。
 
+**聊天消息里的图片同样不落库**：`lib/database.js` 的 `sanitizeImages()` 在写入口把内联 base64 data URL 统一换成占位符 `IMAGE_PLACEHOLDER`（`__image_omitted__`，前端 `public/js/chat.js` 有同名常量，改动必须同步），只放行长度的静态引用（如贴纸 URL）。目的是别让 base64 撑爆 `images` 列——sql.js 每次写入都全量重写整库，一张图就能让之后每次发消息都重写几 MB。图片照旧随 WebSocket 原样发给 Gateway（模型要看得见），只是**不写进数据库**，所以刷新后历史消息显示「图片未保存」提示块，而当前会话内存里仍能看到原图。
+
+**老库的存量图片在每次进程启动时自动清理**（`initDatabase()` → `purgeStoredImages()`，幂等，只扫真正带图的行；逐行读取而非整列载入，避免大库启动内存翻倍）。所以**部署重启即完成迁移，无需手工操作**；前提是 `data/chat.db` 在重启后仍是同一个可写文件。清理与 `compactIfWasteful()` 全程有条件兜底：`VACUUM` 需要约等于库大小的临时空间，失败只打警告不影响启动，留下的空洞会在下次启动按 freelist 占比自动重试回收。日志会打印 `库体积 X → Y`，线上据此确认是否真的生效。
+
 ### 5. sql.js 数据库：每次写入全量重写文件
 
 `lib/database.js` 用的是 **sql.js（WASM 内存数据库）**，不是 better-sqlite3（9f2ac6e 之前是）。关键后果：
