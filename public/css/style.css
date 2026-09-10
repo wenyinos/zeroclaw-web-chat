@@ -744,6 +744,20 @@ textarea {
   transform: scale(1.02);
 }
 
+/* 图片本体不落库，历史消息按占位符渲染成提示块 */
+.msg-image-placeholder {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin-top: .4rem;
+  padding: .4rem .7rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: .78rem;
+}
+
 /* 草稿区域 */
 .drafts-area {
   padding: .5rem 1.25rem;

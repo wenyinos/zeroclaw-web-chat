@@ -1,6 +1,10 @@
 // ZeroClaw Web Chat - 主应用逻辑
 // 基于 companion-app 设计重构
 
+// 与后端 lib/database.js 的 IMAGE_PLACEHOLDER 保持一致：
+// 聊天记录里不保存图片本体，从库里读回的历史消息只会看到这个占位符
+const IMAGE_PLACEHOLDER = '__image_omitted__';
+
 class ClawAgent {
   constructor() {
     // 配置
@@ -1233,6 +1237,19 @@ class ClawAgent {
     this.scrollToBottom();
   }
 
+  // 消息图片渲染：占位符代表「图片没有落库」，渲染成提示块；
+  // 其余是贴纸之类的小引用，照常当图片加载（历史消息里的图片本体已不再保存）
+  renderMessageImages(images) {
+    if (!images || images.length === 0) return '';
+
+    return images.map(img => {
+      if (img === IMAGE_PLACEHOLDER) {
+        return `<div class="msg-image-placeholder" title="图片不会保存到聊天记录">🖼️ 图片未保存</div>`;
+      }
+      return `<img src="${img}" class="msg-image" onclick="app.openLightbox('${img}')" loading="lazy">`;
+    }).join('');
+  }
+
   renderMessage(message, blank = false) {
     const { role, content, timestamp, thinking, images } = message;
     const isMe = role === 'user';
@@ -1263,12 +1280,7 @@ class ClawAgent {
 
     html += `<div class="bubble">`;
     html += `<div class="bubble-text">${blank ? '' : this.renderContent(content)}</div>`;
-
-    if (images && images.length > 0) {
-      images.forEach(img => {
-        html += `<img src="${img}" class="msg-image" onclick="app.openLightbox('${img}')" loading="lazy">`;
-      });
-    }
+    html += this.renderMessageImages(images);
 
     html += `
           <div class="bubble-actions">
@@ -3501,12 +3513,7 @@ class ClawAgent {
 
     html += `<div class="bubble" style="${isAssistant ? 'border-left: 3px solid ' + color : ''}">`;
     html += this.renderContent(message.content);
-
-    if (message.images && message.images.length > 0) {
-      message.images.forEach(img => {
-        html += `<img src="${img}" class="msg-image" onclick="app.openLightbox('${img}')" loading="lazy">`;
-      });
-    }
+    html += this.renderMessageImages(message.images);
 
     html += `
           <div class="bubble-actions">
