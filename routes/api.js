@@ -537,6 +537,14 @@ router.put('/api/assistants/:id', requireVerifiedSession, (req, res) => {
     return res.status(404).json({ success: false, error: '助手不存在' });
   }
 
+  // 前端已校验，这里兜底，避免绕过界面把名称或提示词写空
+  if (updates.name !== undefined && !String(updates.name).trim()) {
+    return res.status(400).json({ success: false, error: '助手名称不能为空' });
+  }
+  if (updates.systemPrompt !== undefined && !String(updates.systemPrompt).trim()) {
+    return res.status(400).json({ success: false, error: '提示词不能为空' });
+  }
+
   delete updates.isDefault;
   delete updates.id;
 
@@ -725,8 +733,11 @@ router.get('/api/sessions', requireVerifiedSession, (req, res) => {
     sessions: sessions.map(s => ({
       sessionId: s.sessionId,
       fileName: `${s.sessionId}.json`,
+      createdAt: s.createdAt,
       updatedAt: s.updatedAt,
-      messageCount: s.messageCount
+      messageCount: s.messageCount,
+      // 摘要压缩空白并截断，避免把整段首条消息全量传给列表
+      preview: (s.preview || '').replace(/\s+/g, ' ').trim().slice(0, 120)
     }))
   });
 });
