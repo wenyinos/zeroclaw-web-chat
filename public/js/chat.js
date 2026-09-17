@@ -34,6 +34,9 @@ class ClawAgent {
     // 当前标签页
     this.currentTab = 'chat';
 
+    // 会话记录里当前选中的会话（列表高亮与下载/继续/删除都以它为准）
+    this.selectedSessionId = null;
+
     // 群聊待回复表：每个助手的回复经各自独立 WebSocket 返回，按消息 id 精确匹配
     this.pendingGroupReplies = new Map(); // Map<thinkingMsgId, { assistant, settle, timer }>
     // 在途私聊回复所属的会话（sendMessage 时记录，回复到达时比对，防跨会话串扰）
@@ -195,6 +198,17 @@ class ClawAgent {
       assistantSettingsClose: document.getElementById('assistantSettingsClose'),
       assistantSettingsList: document.getElementById('assistantSettingsList'),
       addAssistantBtn: document.getElementById('addAssistantBtn'),
+      assistantSettingsTitle: document.getElementById('assistantSettingsTitle'),
+      assistantSettingsListView: document.getElementById('assistantSettingsListView'),
+      assistantForm: document.getElementById('assistantForm'),
+      assistantFormAvatar: document.getElementById('assistantFormAvatar'),
+      assistantFormName: document.getElementById('assistantFormName'),
+      assistantFormColor: document.getElementById('assistantFormColor'),
+      assistantFormPrompt: document.getElementById('assistantFormPrompt'),
+      assistantFormTriggers: document.getElementById('assistantFormTriggers'),
+      assistantFormError: document.getElementById('assistantFormError'),
+      assistantFormCancel: document.getElementById('assistantFormCancel'),
+      assistantFormSave: document.getElementById('assistantFormSave'),
 
       // 记忆
       memoryList: document.getElementById('memoryList'),
@@ -217,7 +231,7 @@ class ClawAgent {
       // 模态框
       historyModal: document.getElementById('historyModal'),
       historyModalClose: document.getElementById('historyModalClose'),
-      historySessionSelect: document.getElementById('historySessionSelect'),
+      historyTimeline: document.getElementById('historyTimeline'),
       refreshHistoryBtn: document.getElementById('refreshHistoryBtn'),
       historyDownloadBtn: document.getElementById('historyDownloadBtn'),
       historyResumeBtn: document.getElementById('historyResumeBtn'),
@@ -1313,36 +1327,245 @@ class ClawAgent {
     this.elements.messagesWrapper.insertAdjacentHTML('beforeend', html);
   }
 
+  // Markdown 渲染入口：整体转义一次，后续解析都在转义文本上进行，
+  // 因此拼接自产标签是安全的，无需再对片段做二次转义。
   renderContent(content) {
-    // 简单的 Markdown 渲染（粗体、斜体、代码、链接）
-    let html = this.escapeHtml(content);
+    return this.renderBlocks(this.escapeHtml(String(content ?? '')).split('\n'));
+  }
 
-    // 代码块先抽出占位，避免后续换行/行内规则污染块内文本
-    const codeBlocks = [];
-    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-      codeBlocks.push(`<pre><code>${code}</code></pre>`);
-      return `<!--CODE${codeBlocks.length - 1}-->`;
+  // 块级解析：标题、围栏代码块、引用、列表、表格、分隔线、段落
+  renderBlocks(lines) {
+    const out = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // 空行只作块分隔
+      if (!line.trim()) {
+        i++;
+        continue;
+      }
+
+      // 围栏代码块；未闭合时也按代码块收尾，兼容逐字渲染的中间态
+      const fence = line.match(/^\s*```+\s*([\w+#.-]*)\s*$/);
+      if (fence) {
+        const lang = fence[1];
+        const code = [];
+        i++;
+        while (i < lines.length && !/^\s*```+\s*$/.test(lines[i])) {
+          code.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) i++;
+        out.push(`<pre${lang ? ` data-lang="${lang}"` : ''}><code>${code.join('\n')}</code></pre>`);
+        continue;
+      }
+
+      // 标题
+      const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) {
+        const level = heading[1].length;
+        out.push(`<h${level}>${this.renderInline(heading[2])}</h${level}>`);
+        i++;
+        continue;
+      }
+
+      // 分隔线
+      if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(line)) {
+        out.push('<hr>');
+        i++;
+        continue;
+      }
+
+      // 引用：连续的 &gt; 行整体递归（> 在转义后写作 &gt;）
+      if (/^\s*&gt;/.test(line)) {
+        const inner = [];
+        while (i < lines.length && /^\s*&gt;/.test(lines[i])) {
+          inner.push(lines[i].replace(/^\s*&gt;\s?/, ''));
+          i++;
+        }
+        out.push(`<blockquote>${this.renderBlocks(inner)}</blockquote>`);
+        continue;
+      }
+
+      // 表格：表头行 + 分隔行
+      if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1])) {
+        const [html, next] = this.renderTable(lines, i);
+        out.push(html);
+        i = next;
+        continue;
+      }
+
+      // 列表
+      if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+        const [html, next] = this.renderList(lines, i);
+        out.push(html);
+        i = next;
+        continue;
+      }
+
+      // 段落：吃到空行或下一个块起点；段内换行保留为 <br>
+      const para = [];
+      while (i < lines.length && lines[i].trim() && !this.isBlockStart(lines, i)) {
+        para.push(lines[i]);
+        i++;
+      }
+      if (!para.length) {
+        // 兜底，避免任何情况下不推进游标
+        para.push(lines[i]);
+        i++;
+      }
+      out.push(`<p>${para.map(l => this.renderInline(l)).join('<br>')}</p>`);
+    }
+
+    return out.join('');
+  }
+
+  // 段落中途遇到这些行时收尾，交由下一轮块级分支处理；
+  // 表格需要前瞻下一行是否为分隔行
+  isBlockStart(lines, i) {
+    const line = lines[i];
+    return /^\s*```/.test(line)
+      || /^#{1,6}\s+/.test(line)
+      || /^\s*([-*_])\s*(\1\s*){2,}$/.test(line)
+      || /^\s*&gt;/.test(line)
+      || /^\s*([-*+]|\d+[.)])\s+/.test(line)
+      || (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]));
+  }
+
+  renderTable(lines, start) {
+    const split = (line) => line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+    const head = split(lines[start]);
+    const align = split(lines[start + 1]).map(c => {
+      const left = c.startsWith(':');
+      const right = c.endsWith(':');
+      if (left && right) return 'center';
+      if (right) return 'right';
+      if (left) return 'left';
+      return '';
     });
+    const attr = (n) => (align[n] ? ` style="text-align:${align[n]}"` : '');
 
-    // 行内代码
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    let i = start + 2;
+    const rows = [];
+    while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+      rows.push(split(lines[i]));
+      i++;
+    }
 
-    // 粗体
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    const th = head.map((c, n) => `<th${attr(n)}>${this.renderInline(c)}</th>`).join('');
+    const tbody = rows
+      .map(r => `<tr>${r.map((c, n) => `<td${attr(n)}>${this.renderInline(c)}</td>`).join('')}</tr>`)
+      .join('');
 
-    // 斜体
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    return [`<table><thead><tr>${th}</tr></thead><tbody>${tbody}</tbody></table>`, i];
+  }
 
-    // 链接
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  renderList(lines, start) {
+    const items = [];
+    let i = start;
 
-    // 换行
-    html = html.replace(/\n/g, '<br>');
+    while (i < lines.length) {
+      const m = lines[i].match(/^([ \t]*)([-*+]|\d+[.)])\s+(.*)$/);
+      if (!m) {
+        // 缩进的非空行是上一项的续行
+        if (items.length && lines[i].trim() && /^\s{2,}/.test(lines[i])) {
+          items[items.length - 1].text.push(lines[i].trim());
+          i++;
+          continue;
+        }
+        break;
+      }
+      const item = {
+        indent: m[1].replace(/\t/g, '    ').length,
+        ordered: /\d/.test(m[2]),
+        text: [m[3]]
+      };
+      const prev = items[items.length - 1];
+      // 同层标记类型变化视为新列表，交由下一轮块级解析重新开表
+      if (prev && prev.ordered !== item.ordered && item.indent === prev.indent) break;
 
-    // 还原代码块（占位符在换行替换后仍然完整）
-    html = html.replace(/<!--CODE(\d+)-->/g, (match, index) => codeBlocks[index]);
+      items.push(item);
+      i++;
+    }
 
-    return html;
+    return [this.buildList(items, 0, items[0].indent)[0], i];
+  }
+
+  // 按缩进递归成嵌套列表，返回 [html, 下一个未消费项的下标]
+  buildList(items, start, indent) {
+    const ordered = items[start].ordered;
+    const tag = ordered ? 'ol' : 'ul';
+    let html = `<${tag}>`;
+    let i = start;
+
+    while (i < items.length && items[i].indent >= indent) {
+      const item = items[i];
+      i++;
+
+      let body = item.text.map(t => this.renderInline(t)).join('<br>');
+      let cls = '';
+
+      // 任务列表：- [ ] / - [x]
+      if (!ordered) {
+        const task = body.match(/^\[([ xX])\]\s?/);
+        if (task) {
+          body = `<input type="checkbox" disabled${task[1].toLowerCase() === 'x' ? ' checked' : ''}> ${body.slice(task[0].length)}`;
+          cls = ' class="task-item"';
+        }
+      }
+
+      html += `<li${cls}>${body}`;
+      if (i < items.length && items[i].indent > indent) {
+        const [sub, next] = this.buildList(items, i, items[i].indent);
+        html += sub;
+        i = next;
+      }
+      html += '</li>';
+    }
+
+    return [`${html}</${tag}>`, i];
+  }
+
+  renderInline(text) {
+    // 代码与链接先生成标签并抽成占位：代码内容保持字面量，
+    // 链接属性也不会被强调规则二次处理（如 _blank 被当成斜体）
+    const snippets = [];
+    const hold = (html) => {
+      snippets.push(html);
+      return `\u0000${snippets.length - 1}\u0000`;
+    };
+    const link = (label, url) =>
+      hold(`<a href="${this.safeUrl(url)}" target="_blank" rel="noopener noreferrer">${this.applyEmphasis(label)}</a>`);
+
+    let out = text.replace(/`([^`]+)`/g, (match, code) => hold(`<code>${code}</code>`));
+
+    // 图片降级为链接：正文里的外链图片会发起第三方请求，不主动渲染
+    out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (match, alt, url) => link(alt || url, url));
+    out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label, url) => link(label, url));
+    out = this.applyEmphasis(out);
+
+    return out
+      .replace(/\u0000(\d+)\u0000/g, (match, n) => snippets[n])
+      .replace(/\u0000/g, '');
+  }
+
+  applyEmphasis(text) {
+    return text
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+      .replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>')
+      .replace(/(^|[^\w_])_([^_\s][^_]*?)_/g, '$1<em>$2</em>');
+  }
+
+  // 只放行 http/https/mailto/tel 与站内相对地址，挡住 javascript: 之类的伪协议。
+  // 转义不处理引号，属性值内的引号必须自行编码，否则能脱离 href 属性。
+  safeUrl(url) {
+    const trimmed = url.trim();
+    if (!/^(https?:|mailto:|tel:|\/|#)/i.test(trimmed)) return '#';
+    return trimmed.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   escapeHtml(text) {
@@ -2397,30 +2620,81 @@ class ClawAgent {
       const data = await response.json();
 
       if (data.success) {
-        this.renderHistoryList(data.sessions);
+        this.renderHistoryTimeline(data.sessions);
         this.elements.historyModal.style.display = 'flex';
       }
     } catch (error) {
       console.error('加载历史记录失败:', error);
+      this.showToast('error', '加载失败', '无法获取会话记录');
     }
   }
 
-  renderHistoryList(sessions) {
-    const select = this.elements.historySessionSelect;
-    select.innerHTML = '<option value="">请选择会话</option>';
+  // 按更新时间把会话分组渲染成时间线，点击左侧条目在右侧查看完整对话
+  renderHistoryTimeline(sessions) {
+    const list = this.elements.historyTimeline;
+    list.innerHTML = '';
+
+    if (!sessions || sessions.length === 0) {
+      list.innerHTML = '<div class="history-empty">暂无会话记录</div>';
+      return;
+    }
+
+    const startOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const today = startOfDay(new Date());
+    const dayMs = 86400000;
+    let currentGroup = null;
 
     sessions.forEach(session => {
-      const option = document.createElement('option');
-      option.value = session.sessionId;
-      const date = new Date(session.updatedAt).toLocaleString('zh-CN');
-      const count = session.messageCount || 0;
-      option.textContent = `${session.sessionId} (${date}, ${count}条消息)`;
-      select.appendChild(option);
+      const time = new Date(session.updatedAt);
+      const daysAgo = Math.round((today - startOfDay(time)) / dayMs);
+      const group = daysAgo <= 0 ? '今天'
+        : daysAgo === 1 ? '昨天'
+        : daysAgo < 7 ? '本周更早'
+        : '更早';
+
+      if (group !== currentGroup) {
+        currentGroup = group;
+        const label = document.createElement('div');
+        label.className = 'history-group';
+        label.textContent = group;
+        list.appendChild(label);
+      }
+
+      list.appendChild(this.buildHistoryItem(session, time, daysAgo < 7));
     });
   }
 
-  async loadSession(sessionId) {
-    if (!sessionId) return;
+  buildHistoryItem(session, time, timeOnly) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'history-item';
+    item.dataset.sessionId = session.sessionId;
+    item.classList.toggle('active', session.sessionId === this.selectedSessionId);
+
+    const timeText = timeOnly
+      ? time.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      : `${time.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })} ${time.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+
+    // 会话没有标题字段，用首条用户消息作摘要；可能为空（如只有命令响应）
+    const title = document.createElement('div');
+    title.className = 'history-item-title';
+    title.textContent = session.preview || '（无用户消息）';
+
+    const meta = document.createElement('div');
+    meta.className = 'history-item-meta';
+    meta.textContent = `${timeText} · ${session.messageCount || 0} 条消息`;
+
+    item.append(title, meta);
+    return item;
+  }
+
+  async selectHistorySession(sessionId) {
+    this.selectedSessionId = sessionId;
+    this.elements.historyTimeline.querySelectorAll('.history-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.sessionId === sessionId);
+    });
+
+    this.elements.historyMeta.textContent = '加载中…';
 
     try {
       const response = await fetch(`/api/sessions/${sessionId}`, {
@@ -2428,27 +2702,52 @@ class ClawAgent {
       });
       const data = await response.json();
 
-      if (data.success) {
-        // 生成预览内容
-        const preview = data.messages.map(msg => {
-          const role = msg.role === 'user' ? '用户' : '助手';
-          return `${role}: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}`;
-        }).join('\n');
+      if (!data.success) throw new Error(data.error || '加载失败');
 
-        this.elements.historyPreview.textContent = preview || '暂无消息';
-        this.elements.historyMeta.textContent = `消息数: ${data.messages.length} | 更新时间: ${new Date(data.updatedAt).toLocaleString('zh-CN')}`;
-        // 预览是截断的，下载要用后端生成的完整 Markdown
-        this.currentSessionMarkdown = data.content || '';
-      }
+      const messages = data.messages || [];
+      const first = messages[0]?.timestamp;
+      const last = messages[messages.length - 1]?.timestamp;
+      const range = first
+        ? `${new Date(first).toLocaleString('zh-CN')} → ${new Date(last).toLocaleTimeString('zh-CN')}`
+        : '无消息';
+
+      this.elements.historyMeta.textContent = `${messages.length} 条消息 · ${range}`;
+      this.elements.historyPreview.innerHTML = messages.length
+        ? messages.map(msg => this.renderHistoryMessage(msg)).join('')
+        : '<div class="history-empty">该会话暂无消息</div>';
+
+      // 详情是渲染过的，下载要用后端生成的完整 Markdown
+      this.currentSessionMarkdown = data.content || '';
+      this.elements.historyPreview.scrollTop = 0;
     } catch (error) {
       console.error('加载会话失败:', error);
+      this.elements.historyMeta.textContent = '加载失败';
+      this.elements.historyPreview.innerHTML = '<div class="history-empty">加载失败，请重试</div>';
     }
   }
 
+  renderHistoryMessage(message) {
+    const isUser = message.role === 'user';
+    const role = isUser ? '用户' : message.role === 'system' ? '系统' : '助手';
+    const time = new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    // 图片本体不落库，历史里把占位符显示成可读提示
+    const content = String(message.content || '').split(IMAGE_PLACEHOLDER).join('［图片已省略］');
+
+    return `
+      <div class="history-msg ${isUser ? 'me' : ''}">
+        <div class="history-msg-head">
+          <span class="history-msg-role">${role}</span>
+          <span class="history-msg-time">${time}</span>
+        </div>
+        <div class="history-msg-body bubble">${this.renderContent(content)}</div>
+      </div>
+    `;
+  }
+
   downloadSession() {
-    const sessionId = this.elements.historySessionSelect.value;
+    const sessionId = this.selectedSessionId;
     if (!sessionId) {
-      this.showToast('error', '无法下载', '请先选择一个会话');
+      this.showToast('error', '无法下载', '请先选择一条会话记录');
       return;
     }
     if (!this.currentSessionMarkdown) {
@@ -2496,8 +2795,11 @@ class ClawAgent {
   }
 
   resumeSession() {
-    const sessionId = this.elements.historySessionSelect.value;
-    if (!sessionId) return;
+    const sessionId = this.selectedSessionId;
+    if (!sessionId) {
+      this.showToast('error', '无法继续', '请先选择一条会话记录');
+      return;
+    }
 
     // 跳转到对应会话的 URL
     const url = `${window.location.pathname}?session=${sessionId}`;
@@ -2505,8 +2807,11 @@ class ClawAgent {
   }
 
   async deleteSession() {
-    const sessionId = this.elements.historySessionSelect.value;
-    if (!sessionId) return;
+    const sessionId = this.selectedSessionId;
+    if (!sessionId) {
+      this.showToast('error', '无法删除', '请先选择一条会话记录');
+      return;
+    }
 
     if (!confirm('确定要删除这个会话吗？')) return;
 
@@ -2518,11 +2823,16 @@ class ClawAgent {
 
       const data = await response.json();
       if (data.success) {
-        this.elements.historyPreview.textContent = '已删除';
+        // 选中项已消失，清空详情并重载列表
+        this.selectedSessionId = null;
+        this.currentSessionMarkdown = '';
+        this.elements.historyMeta.textContent = '从左侧选择一条会话记录';
+        this.elements.historyPreview.innerHTML = '';
         this.loadHistory();
       }
     } catch (error) {
       console.error('删除会话失败:', error);
+      this.showToast('error', '删除失败', error.message);
     }
   }
 
@@ -3069,7 +3379,7 @@ class ClawAgent {
       <div class="assistant-chip ${assistant.id === this.currentAssistant?.id ? 'active' : ''}"
            data-assistant-id="${assistant.id}"
            onclick="app.selectAssistant('${assistant.id}')">
-        <span class="assistant-avatar">${assistant.avatar}</span>
+        <span class="assistant-avatar">${this.escapeHtml(assistant.avatar || '🤖')}</span>
         <span class="assistant-name">${this.escapeHtml(assistant.name)}</span>
       </div>
     `).join('');
@@ -3082,6 +3392,8 @@ class ClawAgent {
   }
 
   showAssistantSettings() {
+    // 每次进入都回到列表视图，避免上次未保存的表单残留
+    this.closeAssistantForm();
     this.renderAssistantSettingsList();
     this.elements.assistantSettingsModal.style.display = 'flex';
   }
@@ -3097,65 +3409,137 @@ class ClawAgent {
     list.innerHTML = this.assistants.map(assistant => `
       <div class="assistant-settings-item" data-assistant-id="${assistant.id}">
         <div class="assistant-settings-header">
-          <div class="assistant-settings-avatar">${assistant.avatar}</div>
+          <div class="assistant-settings-avatar">${this.escapeHtml(assistant.avatar || '🤖')}</div>
           <div class="assistant-settings-info">
             <div class="assistant-settings-name">${this.escapeHtml(assistant.name)}</div>
-            <div class="assistant-settings-triggers">${(assistant.triggers || []).join(', ')}</div>
+            <div class="assistant-settings-triggers">${
+              (assistant.triggers || []).length
+                ? assistant.triggers.map(t => this.escapeHtml(t)).join(' ')
+                : '未设置触发词'
+            }</div>
           </div>
           <div class="assistant-settings-actions">
             <button class="btn-icon" onclick="app.editAssistant('${assistant.id}')" title="编辑">✏️</button>
             ${!assistant.isDefault ? `<button class="btn-icon" onclick="app.deleteAssistant('${assistant.id}')" title="删除">🗑️</button>` : ''}
           </div>
         </div>
-        <div class="assistant-settings-prompt">${this.escapeHtml(assistant.systemPrompt).substring(0, 80)}...</div>
+        <div class="assistant-settings-prompt">${this.escapeHtml(assistant.systemPrompt || '')}</div>
       </div>
     `).join('');
   }
 
-  editAssistant(id) {
-    const assistant = this.getAssistantById(id);
-    if (!assistant) return;
+  // 新增与编辑共用同一个表单视图，切换时重置错误提示与字段
+  openAssistantForm(id) {
+    const assistant = id ? this.getAssistantById(id) : null;
+    if (id && !assistant) return;
 
-    const name = prompt('助手名称:', assistant.name);
-    if (name === null) return;
+    this.editingAssistantId = assistant ? assistant.id : null;
 
-    const avatar = prompt('头像 (emoji):', assistant.avatar);
-    if (avatar === null) return;
+    this.elements.assistantSettingsTitle.textContent = assistant ? '编辑助手' : '添加助手';
+    this.elements.assistantFormAvatar.value = assistant?.avatar || '🤖';
+    this.elements.assistantFormName.value = assistant?.name || '';
+    this.elements.assistantFormColor.value = assistant?.color || '#6fb1ff';
+    this.elements.assistantFormPrompt.value = assistant?.systemPrompt || '';
+    this.elements.assistantFormTriggers.value = (assistant?.triggers || []).join(', ');
+    this.elements.assistantFormError.textContent = '';
+    this.elements.assistantFormSave.disabled = false;
 
-    const systemPrompt = prompt('提示词:', assistant.systemPrompt);
-    if (systemPrompt === null) return;
-
-    const triggersStr = prompt('触发词 (逗号分隔):', (assistant.triggers || []).join(', '));
-    const triggers = triggersStr ? triggersStr.split(',').map(t => t.trim()).filter(Boolean) : [];
-
-    this.updateAssistant(id, { name, avatar, systemPrompt, triggers });
+    this.elements.assistantSettingsListView.style.display = 'none';
+    this.elements.assistantForm.style.display = 'block';
+    this.elements.assistantFormName.focus();
   }
 
-  async updateAssistant(id, updates) {
+  closeAssistantForm() {
+    this.editingAssistantId = null;
+    this.elements.assistantForm.style.display = 'none';
+    this.elements.assistantSettingsListView.style.display = 'block';
+    this.elements.assistantSettingsTitle.textContent = '助手设置';
+  }
+
+  editAssistant(id) {
+    this.openAssistantForm(id);
+  }
+
+  addAssistant() {
+    this.openAssistantForm(null);
+  }
+
+  // 逗号（中英文）或空格分隔，统一补 @，并去重
+  parseTriggerInput(raw) {
+    const seen = new Set();
+    const result = [];
+
+    String(raw || '')
+      .split(/[,，\s]+/)
+      .map(t => t.trim().replace(/^@+/, ''))
+      .filter(Boolean)
+      .forEach(word => {
+        const trigger = `@${word}`;
+        if (!seen.has(trigger)) {
+          seen.add(trigger);
+          result.push(trigger);
+        }
+      });
+
+    return result;
+  }
+
+  validateAssistantForm({ name, systemPrompt, triggers }) {
+    if (!name) return '请填写助手名称';
+    if (!systemPrompt) return '请填写提示词';
+    if (this.assistants.some(a => a.id !== this.editingAssistantId && a.name === name)) {
+      return '已存在同名助手，请换一个名称';
+    }
+    if (triggers.length > 20) return '触发词最多 20 个';
+    return '';
+  }
+
+  async submitAssistantForm() {
+    const name = this.elements.assistantFormName.value.trim();
+    const systemPrompt = this.elements.assistantFormPrompt.value.trim();
+    const triggers = this.parseTriggerInput(this.elements.assistantFormTriggers.value);
+    const avatar = this.elements.assistantFormAvatar.value.trim() || '🤖';
+    const color = this.elements.assistantFormColor.value;
+    const editingId = this.editingAssistantId;
+
+    const error = this.validateAssistantForm({ name, systemPrompt, triggers });
+    if (error) {
+      this.elements.assistantFormError.textContent = error;
+      return;
+    }
+
+    this.elements.assistantFormSave.disabled = true;
+
     try {
-      const response = await fetch(`/api/assistants/${id}`, {
-        method: 'PUT',
+      const response = await fetch(editingId ? `/api/assistants/${editingId}` : '/api/assistants', {
+        method: editingId ? 'PUT' : 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Session-Id': this.verifiedSessionId
         },
-        body: JSON.stringify(updates)
+        body: JSON.stringify({ name, avatar, systemPrompt, color, triggers })
       });
 
       const data = await response.json();
-      if (data.success) {
-        // 更新本地数据
-        const index = this.assistants.findIndex(a => a.id === id);
-        if (index !== -1) {
-          this.assistants[index] = data.assistant;
-        }
-        this.renderAssistantSelector();
-        this.renderAssistantSettingsList();
-        this.showToast('success', '已保存', '助手配置已更新');
+      if (!data.success) throw new Error(data.error || '保存失败');
+
+      if (editingId) {
+        const index = this.assistants.findIndex(a => a.id === editingId);
+        if (index !== -1) this.assistants[index] = data.assistant;
+        // 改的正是当前选中的助手时同步引用，否则群聊头部还显示旧名称/颜色
+        if (this.currentAssistant?.id === editingId) this.currentAssistant = data.assistant;
+      } else {
+        this.assistants.push(data.assistant);
       }
-    } catch (error) {
-      console.error('更新助手失败:', error);
-      this.showToast('error', '保存失败', '更新助手配置失败');
+
+      this.closeAssistantForm();
+      this.renderAssistantSelector();
+      this.renderAssistantSettingsList();
+      this.showToast('success', editingId ? '已保存' : '已添加', editingId ? '助手配置已更新' : `已创建助手 ${data.assistant.name}`);
+    } catch (err) {
+      console.error('保存助手失败:', err);
+      this.elements.assistantFormError.textContent = err.message;
+      this.elements.assistantFormSave.disabled = false;
     }
   }
 
@@ -3178,42 +3562,6 @@ class ClawAgent {
     } catch (error) {
       console.error('删除助手失败:', error);
       this.showToast('error', '删除失败', '删除助手失败');
-    }
-  }
-
-  async addAssistant() {
-    const name = prompt('助手名称:');
-    if (!name) return;
-
-    const avatar = prompt('头像 (emoji):', '🤖');
-    if (!avatar) return;
-
-    const systemPrompt = prompt('提示词:');
-    if (!systemPrompt) return;
-
-    const triggersStr = prompt('触发词 (逗号分隔):');
-    const triggers = triggersStr ? triggersStr.split(',').map(t => t.trim()).filter(Boolean) : [];
-
-    try {
-      const response = await fetch('/api/assistants', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Id': this.verifiedSessionId
-        },
-        body: JSON.stringify({ name, avatar, systemPrompt, triggers })
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        this.assistants.push(data.assistant);
-        this.renderAssistantSelector();
-        this.renderAssistantSettingsList();
-        this.showToast('success', '已添加', '新助手已创建');
-      }
-    } catch (error) {
-      console.error('添加助手失败:', error);
-      this.showToast('error', '添加失败', '创建助手失败');
     }
   }
 
@@ -3959,6 +4307,15 @@ class ClawAgent {
     if (elements.addAssistantBtn) {
       elements.addAssistantBtn.addEventListener('click', () => this.addAssistant());
     }
+    if (elements.assistantForm) {
+      elements.assistantForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.submitAssistantForm();
+      });
+    }
+    if (elements.assistantFormCancel) {
+      elements.assistantFormCancel.addEventListener('click', () => this.closeAssistantForm());
+    }
 
     // 新建会话
     elements.newChatBtn.addEventListener('click', () => this.newChat());
@@ -3968,8 +4325,10 @@ class ClawAgent {
     elements.historyModalClose.addEventListener('click', () => {
       elements.historyModal.style.display = 'none';
     });
-    elements.historySessionSelect.addEventListener('change', (e) => {
-      this.loadSession(e.target.value);
+    // 用事件委托取值，sessionId 只经 dataset 传递，不拼进 HTML
+    elements.historyTimeline.addEventListener('click', (e) => {
+      const item = e.target.closest('.history-item');
+      if (item) this.selectHistorySession(item.dataset.sessionId);
     });
     elements.historyDownloadBtn.addEventListener('click', () => this.downloadSession());
     elements.historyResumeBtn.addEventListener('click', () => this.resumeSession());

@@ -198,16 +198,48 @@
                 <div class="modal-overlay" id="assistantSettingsModal" style="display: none;">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h3>助手设置</h3>
+                            <h3 id="assistantSettingsTitle">助手设置</h3>
                             <button class="btn-icon modal-close" id="assistantSettingsClose">✕</button>
                         </div>
                         <div class="modal-body">
-                            <div class="assistant-settings-list" id="assistantSettingsList">
-                                <!-- 动态填充 -->
+                            <div id="assistantSettingsListView">
+                                <div class="assistant-settings-list" id="assistantSettingsList">
+                                    <!-- 动态填充 -->
+                                </div>
+                                <button class="btn-primary-sm" id="addAssistantBtn">
+                                    + 添加助手
+                                </button>
                             </div>
-                            <button class="btn-primary-sm" id="addAssistantBtn">
-                                + 添加助手
-                            </button>
+                            <!-- 添加/编辑共用一个表单，避免连续 prompt 打断输入 -->
+                            <form class="assistant-form" id="assistantForm" style="display: none;">
+                                <div class="assistant-form-row">
+                                    <label class="assistant-form-field assistant-form-field-avatar">
+                                        <span>头像</span>
+                                        <input type="text" id="assistantFormAvatar" maxlength="8" placeholder="🤖">
+                                    </label>
+                                    <label class="assistant-form-field">
+                                        <span>名称</span>
+                                        <input type="text" id="assistantFormName" maxlength="40" placeholder="例如 Code Bot">
+                                    </label>
+                                    <label class="assistant-form-field assistant-form-field-color">
+                                        <span>颜色</span>
+                                        <input type="color" id="assistantFormColor" value="#6fb1ff">
+                                    </label>
+                                </div>
+                                <label class="assistant-form-field">
+                                    <span>提示词</span>
+                                    <textarea id="assistantFormPrompt" rows="6" placeholder="描述这个助手的角色、擅长领域和回复风格"></textarea>
+                                </label>
+                                <label class="assistant-form-field">
+                                    <span>触发词</span>
+                                    <input type="text" id="assistantFormTriggers" placeholder="coder, 代码（逗号分隔，会自动补 @）">
+                                </label>
+                                <div class="assistant-form-error" id="assistantFormError"></div>
+                                <div class="assistant-form-actions">
+                                    <button type="button" class="btn-secondary-sm" id="assistantFormCancel">取消</button>
+                                    <button type="submit" class="btn-primary-sm" id="assistantFormSave">保存</button>
+                                </div>
+                            </form>
                         </div>
                     </div>
                 </div>
@@ -485,18 +517,20 @@
                 <h3>会话记录</h3>
                 <button class="btn-icon modal-close" id="historyModalClose">✕</button>
             </div>
-            <div class="modal-body">
-                <div class="history-controls">
-                    <select class="history-select" id="historySessionSelect">
-                        <option value="">请选择会话</option>
-                    </select>
-                    <button class="btn-secondary-sm" id="refreshHistoryBtn">刷新</button>
-                    <button class="btn-secondary-sm" id="historyDownloadBtn">下载</button>
-                    <button class="btn-primary-sm" id="historyResumeBtn">继续聊天</button>
-                    <button class="btn-danger-sm" id="historyDeleteBtn">删除</button>
-                </div>
-                <div class="history-meta" id="historyMeta"></div>
-                <pre class="history-preview" id="historyPreview">暂无会话记录</pre>
+            <div class="modal-body history-body">
+                <aside class="history-timeline" id="historyTimeline">
+                    <div class="history-empty">暂无会话记录</div>
+                </aside>
+                <section class="history-detail">
+                    <div class="history-controls">
+                        <button class="btn-secondary-sm" id="refreshHistoryBtn">刷新</button>
+                        <button class="btn-secondary-sm" id="historyDownloadBtn">下载</button>
+                        <button class="btn-primary-sm" id="historyResumeBtn">继续聊天</button>
+                        <button class="btn-danger-sm" id="historyDeleteBtn">删除</button>
+                    </div>
+                    <div class="history-meta" id="historyMeta">从左侧选择一条会话记录</div>
+                    <div class="history-content" id="historyPreview"></div>
+                </section>
             </div>
         </div>
     </div>
