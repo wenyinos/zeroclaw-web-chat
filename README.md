@@ -39,9 +39,10 @@ See `.env.example` for all available configuration options.
 - **Duplicate-reply dedup**: gateway retries and cross-connection broadcasts of the same generation are rendered once only; gateway error texts (e.g. empty responses) become fixed placeholders
 - **Per-tab isolation**: each browser tab/device gets its own gateway session, so opening the same conversation twice no longer doubles replies
 - **Proactive messages**: gateway-initiated pushes (heartbeat tasks, cron jobs, spawned sub-agents) arrive as notifications and are persisted
-- Markdown rendering (code blocks keep indentation and line breaks, long lines scroll horizontally) with light/dark theme
+- **Markdown rendering**: headings, ordered/unordered/nested lists, task lists, blockquotes, tables (with column alignment), horizontal rules, code blocks (language label, indentation and line breaks preserved, long lines scroll horizontally), inline code, bold/italic/strikethrough and links — with light/dark theme
 - Auto-saved chat records in SQLite database (atomic writes: temp file + rename, so a crash never corrupts the database)
 - **Session management**: create, resume, export as Markdown, delete — separately for direct and group chats
+- **Session timeline**: history is grouped into Today / Yesterday / Earlier this week / Older; the left column lists each conversation with its first user message, message count and update time, the right column shows the full dialogue with role and timestamp (rendered as Markdown)
 - **Export chat records**: download the whole SQLite database (`data/chat.db`) from the settings page
 - Exported records keep only dialogue content, filtering tool/debug output, system placeholder messages and timeout notices; image-only messages are kept as placeholders
 - **Cross-session reply protection**: a reply that lands after you switched direct-chat sessions is saved to the original conversation, never into the current one
@@ -56,7 +57,7 @@ See `.env.example` for all available configuration options.
 - 3 default assistants: Claw Agent, Code Bot, Writer
 - **@mention trigger**: Type `@coder` or `@writer` to target specific assistant
 - **All reply mode**: Send without @mention, all assistants reply **simultaneously**
-- **Assistant settings**: Customize name, avatar, system prompt, triggers — each assistant answers in its own persona
+- **Assistant settings**: form-based editing of name, avatar, color, system prompt and triggers (required-field and duplicate-name validation, triggers get an `@` prefix added and are de-duplicated) — each assistant answers in its own persona
 - Pinned memories are injected into group replies as well, consistent with direct chat
 - **Session management**: same as direct chat — create, switch, resume, export, delete
 - Timeout guard: an assistant that stays silent for 90s is marked as timed out
@@ -223,11 +224,11 @@ public/
 ### Assistants
 - `GET /api/assistants` - List assistants
 - `POST /api/assistants` - Create assistant
-- `PUT /api/assistants/:id` - Update assistant
-- `DELETE /api/assistants/:id` - Delete assistant
+- `PUT /api/assistants/:id` - Update assistant (name and system prompt cannot be blank)
+- `DELETE /api/assistants/:id` - Delete assistant (the default assistant cannot be deleted)
 
 ### Sessions
-- `GET /api/sessions` - List all sessions
+- `GET /api/sessions` - List all sessions (includes `createdAt` and `preview`, the conversation's first user message)
 - `GET /api/sessions/:id` - Get session details
 - `DELETE /api/sessions/:id` - Delete session
 - `POST /api/sessions/forge` - Clean session
