@@ -39,7 +39,7 @@ See `.env.example` for all available configuration options.
 - **Duplicate-reply dedup**: gateway retries and cross-connection broadcasts of the same generation are rendered once only; gateway error texts (e.g. empty responses) become fixed placeholders
 - **Per-tab isolation**: each browser tab/device gets its own gateway session, so opening the same conversation twice no longer doubles replies
 - **Proactive messages**: gateway-initiated pushes (heartbeat tasks, cron jobs, spawned sub-agents) arrive as notifications and are persisted
-- **Markdown rendering**: headings, ordered/unordered/nested lists, task lists, blockquotes, tables (with column alignment), horizontal rules, code blocks (language label, indentation and line breaks preserved, long lines scroll horizontally), inline code, bold/italic/strikethrough and links — with light/dark theme
+- **Markdown rendering**: headings, ordered/unordered/nested lists, task lists, blockquotes, tables (with column alignment), horizontal rules, code blocks (language label, indentation and line breaks preserved, long lines scroll horizontally), inline code, bold/italic/strikethrough and links
 - Auto-saved chat records in SQLite database (atomic writes: temp file + rename, so a crash never corrupts the database)
 - **Session management**: create, resume, export as Markdown, delete — separately for direct and group chats
 - **Session timeline**: history is grouped into Today / Yesterday / Earlier this week / Older; the left column lists each conversation with its first user message, message count and update time, the right column shows the full dialogue with role and timestamp (rendered as Markdown)
@@ -150,7 +150,7 @@ Gateway itself (no LLM cost) and both the command and its result persist in the 
 ### Settings Panel
 
 - Username and assistant name customization
-- Theme selection (light/dark)
+- **Theme**: three color schemes (warm, pink, light blue), each with a light and a dark variant; the toolbar button switches between the two modes within the current scheme while the settings dropdown offers all six. The choice is kept per device — the value in server settings only seeds a device that has none yet
 - Browser notification toggle
 - **Data management**: export the chat record database as a SQLite file (`chat-records-<date>.db`)
 - Settings changes are pushed over SSE to other open tabs
