@@ -312,14 +312,15 @@ class ClawAgent {
         const { settings } = data;
         this.elements.userNameInput.value = settings.userName || 'Wenyin';
         this.elements.assistantNameInput.value = settings.assistantName || 'Claw Agent';
-        this.elements.themeSelect.value = settings.theme || 'light';
+        const theme = this.resolveTheme(settings.theme);
+        this.elements.themeSelect.value = theme;
         this.elements.notificationsToggle.checked = settings.notifications || false;
 
         // 保存当前设置
         this.currentSettings = settings;
 
         // 应用主题
-        this.setTheme(settings.theme || 'light');
+        this.setTheme(theme);
 
         // 更新用户头像
         const initial = (settings.userName || 'W')[0].toUpperCase();
@@ -535,6 +536,13 @@ class ClawAgent {
     this.setTheme(savedTheme);
   }
 
+  // 主题以本机记录为准：服务端设置里也存了一份，只在本地没有记录时（首次访问、
+  // 清过站点数据）才拿它当初始值。否则登录时的设置加载与 SSE 快照推送都会用
+  // 服务端旧值把本机选的主题覆盖回去。
+  resolveTheme(serverTheme) {
+    return localStorage.getItem('theme') || serverTheme || 'light';
+  }
+
   setTheme(theme) {
     document.body.dataset.theme = theme;
     localStorage.setItem('theme', theme);
@@ -543,14 +551,23 @@ class ClawAgent {
       this.elements.themeSelect.value = theme;
     }
 
+    const isDark = theme === 'dark' || theme.endsWith('-dark');
     if (this.elements.themeToggleBtn) {
-      this.elements.themeToggleBtn.textContent = theme === 'dark' ? '☀️' : '🌙';
+      this.elements.themeToggleBtn.textContent = isDark ? '☀️' : '🌙';
+      this.elements.themeToggleBtn.title = isDark ? '切换到亮色' : '切换到暗色';
     }
+
+    // 移动端地址栏跟随当前主题底色
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', getComputedStyle(document.body).backgroundColor);
   }
 
+  // 顶部按钮只切明暗，保留当前色系（暖色/粉色/浅蓝）
   toggleTheme() {
     const current = document.body.dataset.theme || 'light';
-    this.setTheme(current === 'light' ? 'dark' : 'light');
+    const toDark = { light: 'dark', pink: 'pink-dark', blue: 'blue-dark' };
+    const toLight = { dark: 'light', 'pink-dark': 'pink', 'blue-dark': 'blue' };
+    this.setTheme(toDark[current] || toLight[current] || 'dark');
   }
 
   // ===== WebSocket =====
@@ -707,9 +724,8 @@ class ClawAgent {
     if (settings.assistantName) {
       this.elements.assistantNameInput.value = settings.assistantName;
     }
-    if (settings.theme) {
-      this.setTheme(settings.theme);
-      this.elements.themeSelect.value = settings.theme;
+    if (settings.theme || localStorage.getItem('theme')) {
+      this.setTheme(this.resolveTheme(settings.theme));
     }
     if (settings.notifications !== undefined) {
       this.elements.notificationsToggle.checked = settings.notifications;
