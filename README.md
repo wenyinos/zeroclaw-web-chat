@@ -110,6 +110,7 @@ Set `MEMORY_ENABLED=true` to show this tab — it is off by default.
 - **Auto-extraction**: after a direct-chat reply lands, the Gateway is asked once (on a throwaway connection) whether the conversation contained durable personal facts; candidates appear in a confirmation card — nothing is saved unless you click "Save & pin" (throttled to once per minute, silent on failure)
 - The UI always shows exactly what you typed — memories are only appended to the payload sent to the Gateway
 - Also supports hand-written memories, keyword search, and a 100KB per-entry limit
+- Memory cards use a responsive grid: titles truncate to one line (hover for the full text) and previews cap at 3 lines; the page itself scrolls, so the document section stays reachable no matter how many memories you have
 
 ```
 Memory list

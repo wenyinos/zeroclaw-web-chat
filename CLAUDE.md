@@ -118,6 +118,8 @@ Gateway → { type:'message.create', payload:{ content, thought? } }
 
 记忆的工作方式：`.md` 文件上传后存进 `memories` 表（文件名作标题），**只有置顶（`pinned`）的记忆**会被 `buildMemoryPrompt()` 拼成前缀注入消息正文。`loadMemories()` 顺带刷新 `pinnedMemories` 缓存，所以置顶/删除后无需额外请求。界面显示的始终是用户原话，拼接只发生在发往 Gateway 的载荷里。
 
+记忆页的滚动由 `.memory-container`（`overflow-y: auto`）承担，`.memory-list` 只是响应式 grid。**不要给 `.memory-list` 设固定高度或内部滚动**——它一旦自己撑满，外层就没有可滚动区域，页面会卡在顶部（2.2.2 修过这个 bug）。卡片标题单行省略、正文 3 行截断，完整标题通过 `title` 属性提供。
+
 ### 8. Service Worker 必须保持网络优先
 
 `public/sw.js` 曾是缓存优先，导致 HTML/CSS/JS 改完后用户长期停在旧版本（后台回写没有 `waitUntil` 保护，SW 可能在写回前被终止）。现为**网络优先、离线回退缓存**。
