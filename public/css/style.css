@@ -1238,6 +1238,7 @@ textarea {
   min-height: 0;
   padding: 1rem 1.25rem;
   gap: 1rem;
+  overflow-y: auto;
 }
 
 .memory-search {
@@ -1245,18 +1246,21 @@ textarea {
 }
 
 .memory-list {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  align-content: start;
   gap: .75rem;
+}
+
+.memory-list > .empty-state {
+  grid-column: 1 / -1;
 }
 
 .memory-item {
   background: var(--panel);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  padding: .85rem;
+  padding: .7rem;
   transition: transform .15s, box-shadow .15s;
 }
 
@@ -1277,18 +1281,27 @@ textarea {
 }
 
 .memory-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   font-size: .95rem;
 }
 
 .memory-actions {
   display: flex;
+  flex-shrink: 0;
   gap: .25rem;
 }
 
 .memory-content {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   color: var(--muted);
-  font-size: .9rem;
+  font-size: .85rem;
   line-height: 1.5;
 }
 
@@ -1297,6 +1310,10 @@ textarea {
   flex-wrap: wrap;
   gap: .35rem;
   margin-top: .5rem;
+}
+
+.memory-tags:empty {
+  display: none;
 }
 
 .tag {
@@ -1309,6 +1326,7 @@ textarea {
 
 /* ===== 文档列表 ===== */
 .memory-section {
+  flex-shrink: 0;
   margin-bottom: 2rem;
 }
 

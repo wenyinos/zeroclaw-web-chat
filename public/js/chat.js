@@ -3241,7 +3241,7 @@ class ClawAgent {
     memoryList.innerHTML = sorted.map(memory => `
       <div class="memory-item ${memory.pinned ? 'pinned' : ''}" data-memory-id="${memory.id}">
         <div class="memory-header">
-          <div class="memory-title">${this.escapeHtml(memory.title)}</div>
+          <div class="memory-title" title="${this.escapeHtml(memory.title).replace(/"/g, '&quot;')}">${this.escapeHtml(memory.title)}</div>
           <div class="memory-actions">
             <button class="btn-icon" onclick="app.togglePinMemory('${memory.id}')" title="${memory.pinned ? '取消置顶' : '置顶'}">
               ${memory.pinned ? '📌' : '📍'}
